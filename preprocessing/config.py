@@ -102,8 +102,8 @@ class HandCropConfig:
 class PreprocessingConfig:
     """Master preprocessing configuration."""
     dataset: Literal["phoenix2014t", "aslg_pc12"] = "phoenix2014t"
-    data_root: str = "/path/to/PHOENIX-2014-T"
-    output_dir: str = "data_cache"
+    data_root: str = "../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+    output_dir: str = "../data_cache"
 
     # Processing settings
     num_workers: int = 8
