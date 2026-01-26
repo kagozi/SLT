@@ -1,0 +1,55 @@
+name: slt-multistream
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  # --- core ---
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - tqdm
+  - pyyaml
+  - rich
+  - click
+
+  # --- vision / IO ---
+  - opencv
+  - pillow
+  - ffmpeg
+
+  # --- plotting / debug ---
+  - matplotlib
+
+  # --- pytorch (GPU) ---
+  # If your cluster has CUDA 12.1 support, keep this.
+  # If not, replace pytorch-cuda=12.1 with the version supported on your system.
+  - pytorch>=2.2
+  - torchvision>=0.17
+  - torchaudio>=2.2
+  - pytorch-cuda=12.1
+
+  # --- misc ---
+  - einops
+  - sentencepiece
+  - regex
+  - scikit-learn
+
+  # --- pip-only packages ---
+  - pip:
+      # MediaPipe is typically easiest via pip on Linux
+      - mediapipe==0.10.14
+
+      # YOLOv8 (for non-Phoenix datasets / optional detection)
+      - ultralytics>=8.2.0
+
+      # Quality-of-life
+      - omegaconf
+      - hydra-core
+      - tensorboard
+
+      # (Optional) metrics helpers
+      - sacrebleu
+      - nltk
