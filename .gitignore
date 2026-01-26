@@ -1,0 +1,12 @@
+.ecg
+.venv/*
+.ecg/*
+datasets/
+datasets/*
+*.zip
+__pycache__/
+*.py[cod]
+*$py.class
+*.sh
+slurm-*.out
+*.out
