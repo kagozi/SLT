@@ -14,7 +14,7 @@ spec:
         set -e
         cd /data
         echo "Extracting Phoenix dataset..."
-        tar -xvf phoenix-2014-T.v3.tar.gz
+        tar -xvf phoenix-2014-T.v3.tar.gz -C phoenix2014
         echo "Extraction complete"
     volumeMounts:
     - name: slt-data
