@@ -1,0 +1,25 @@
+# extract-phoenix.yaml - Kubernetes Pod to extract Phoenix dataset
+apiVersion: v1
+kind: Pod
+metadata:
+  name: extract-phoenix
+spec:
+  restartPolicy: Never
+  containers:
+  - name: extractor
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        set -e
+        cd /data/phoenix2014
+        echo "Extracting Phoenix dataset..."
+        tar -xvf phoenix-2014-T.v3.tar.gz
+        echo "Extraction complete"
+    volumeMounts:
+    - name: slt-data
+      mountPath: /data
+  volumes:
+  - name: slt-data
+    persistentVolumeClaim:
+      claimName: slt-data
