@@ -12,7 +12,7 @@ spec:
     args:
       - |
         set -e
-        cd /data/phoenix2014
+        cd /data
         echo "Extracting Phoenix dataset..."
         tar -xvf phoenix-2014-T.v3.tar.gz
         echo "Extraction complete"
