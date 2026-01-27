@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-inspector
+spec:
+  restartPolicy: Never
+  containers:
+  - name: inspect
+    image: ubuntu:22.04
+    command: ["sleep", "infinity"]
+    volumeMounts:
+    - name: slt-data
+      mountPath: /data
+  volumes:
+  - name: slt-data
+    persistentVolumeClaim:
+      claimName: slt-data
