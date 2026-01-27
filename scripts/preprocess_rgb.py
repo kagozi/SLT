@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 import warnings
 
+import csv
 import cv2
 import numpy as np
 import torch
@@ -195,28 +196,39 @@ class RGBPreprocessor:
         return results
 
 
-def load_phoenix_annotations(data_root: str, split: str) -> Dict[str, Dict[str, str]]:
-    annotations_dir = Path(data_root) / "annotations" / "manual"
-    # Phoenix v3 has:
-    # dev/test: PHOENIX-2014-T.dev.corpus.csv, PHOENIX-2014-T.test.corpus.csv
-    # train: PHOENIX-2014-T.train.corpus.csv (also train-complex-annotation exists)
-    anno_file = annotations_dir / f"PHOENIX-2014-T.{split}.corpus.csv"
+
+def load_phoenix_annotations(data_root: str, split: str) -> dict:
+    """
+    Load PHOENIX-2014-T annotations.
+
+    CSV columns (v3):
+      name|video|start|end|speaker|orth|translation
+    """
+    anno_file = (
+        Path(data_root)
+        / "annotations"
+        / "manual"
+        / f"PHOENIX-2014-T.{split}.corpus.csv"
+    )
 
     annotations = {}
-    if not anno_file.exists():
-        print(f"⚠️  Annotation file not found: {anno_file}")
-        return annotations
 
     with open(anno_file, "r", encoding="utf-8") as f:
-        lines = f.readlines()[1:]  # skip header
-        for line in lines:
-            parts = line.strip().split("|")
-            # expected: name|signer|gloss|translation
-            if len(parts) >= 4:
-                vid = parts[0]
-                annotations[vid] = {"signer": parts[1], "gloss": parts[2], "translation": parts[3]}
-    return annotations
+        reader = csv.DictReader(f, delimiter="|")
+        for row in reader:
+            vid = row["name"].strip()
 
+            # "video" is a path/glob, not a signer ID
+            annotations[vid] = {
+                "video_glob": row.get("video", "").strip(),
+                "signer": row.get("speaker", "").strip(),
+                "orth": row.get("orth", "").strip(),                 # gloss-like tokens
+                "translation": row.get("translation", "").strip(),   # target sentence
+                "start": row.get("start", "").strip(),
+                "end": row.get("end", "").strip(),
+            }
+
+    return annotations
 
 def main():
     parser = argparse.ArgumentParser()
