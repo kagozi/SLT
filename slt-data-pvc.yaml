@@ -1,0 +1,11 @@
+# slt-data-pvc.yaml - configuration for PersistentVolumeClaim for SLT data storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slt-data
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 150Gi
