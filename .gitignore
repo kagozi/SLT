@@ -7,6 +7,6 @@ datasets/*
 __pycache__/
 *.py[cod]
 *$py.class
-*.sh
+# *.sh
 slurm-*.out
 *.out
