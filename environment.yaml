@@ -3,11 +3,13 @@ channels:
   - pytorch
   - nvidia
   - conda-forge
+channel_priority: strict
+
 dependencies:
   # --- core ---
   - python=3.10
   - pip
-  - numpy
+  - numpy>=1.23
   - scipy
   - pandas
   - tqdm
@@ -16,19 +18,20 @@ dependencies:
   - click
 
   # --- vision / IO ---
-  - opencv
+  # Use headless OpenCV on clusters to avoid X11/GUI dependency issues.
+  - opencv=4.*=*headless*
   - pillow
   - ffmpeg
 
-  # --- plotting / debug ---
+  # --- plotting / debug (optional on headless nodes; safe to keep) ---
   - matplotlib
 
   # --- pytorch (GPU) ---
-  # If your cluster has CUDA 12.1 support, keep this.
-  # If not, replace pytorch-cuda=12.1 with the version supported on your system.
-  - pytorch>=2.2
-  - torchvision>=0.17
-  - torchaudio>=2.2
+  # Pin these to reduce solver weirdness.
+  # If your cluster CUDA driver is not compatible with 12.1 runtime, adjust pytorch-cuda accordingly.
+  - pytorch=2.2.*
+  - torchvision=0.17.*
+  - torchaudio=2.2.*
   - pytorch-cuda=12.1
 
   # --- misc ---
@@ -37,19 +40,23 @@ dependencies:
   - regex
   - scikit-learn
 
+  # --- metrics / NLP ---
+  - sacrebleu
+  - nltk
+  - jiwer
+
   # --- pip-only packages ---
   - pip:
-      # MediaPipe is typically easiest via pip on Linux
+      # MediaPipe via pip is usually simplest
       - mediapipe==0.10.14
 
-      # YOLOv8 (for non-Phoenix datasets / optional detection)
+      # MediaPipe compatibility (very common fix)
+      - protobuf<5
+
+      # YOLOv8 (optional; remove if you don't need it right now)
       - ultralytics>=8.2.0
 
-      # Quality-of-life
+      # Quality-of-life / config
       - omegaconf
       - hydra-core
       - tensorboard
-
-      # (Optional) metrics helpers
-      - sacrebleu
-      - nltk
