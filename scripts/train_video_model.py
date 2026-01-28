@@ -18,7 +18,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-# sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data.phoenix_dataset import PhoenixVideoDataset, collate_video_batch
 from data.vocab import build_word_vocab, decode as decode_vocab

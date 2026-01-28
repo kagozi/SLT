@@ -12,7 +12,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from video_encoders.rgb_encoder import RGBVideoEncoder, PositionalEncoding
+from .video_encoders.rgb_encoder import RGBVideoEncoder, PositionalEncoding 
 
 
 def generate_square_subsequent_mask(sz: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
