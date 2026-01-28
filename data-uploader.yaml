@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: data-uploader
+spec:
+  restartPolicy: Never
+  containers:
+  - name: uploader
+    image: ubuntu:22.04
+    command: ["sleep", "infinity"]
+    volumeMounts:
+    - mountPath: /data
+      name: slt-data
+  volumes:
+  - name: slt-data
+    persistentVolumeClaim:
+      claimName: slt-data
