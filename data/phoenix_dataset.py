@@ -139,7 +139,7 @@ class PhoenixVideoDataset(Dataset):
 
         # Encode orth → ids
         if self.gloss_vocab is not None:
-            from vocab import encode
+            from .vocab import encode
             orth_ids = encode(orth, self.gloss_vocab, add_bos_eos=True)
             data["orth_ids"] = torch.tensor(orth_ids, dtype=torch.long)
 
