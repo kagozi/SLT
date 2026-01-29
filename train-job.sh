@@ -63,7 +63,7 @@ echo "=========================================="
 echo "Starting Stage-1 RGB-only Training"
 echo "=========================================="
 
-python -m scripts.train_video_model \
+python scripts.train_video_model.py \
   --data_cache "$DATA_CACHE" \
   --output_dir "$RUN_DIR" \
   --epochs 50 \
@@ -74,12 +74,14 @@ python -m scripts.train_video_model \
   --nhead 8 \
   --d_model 512 \
   --dropout 0.1 \
-  --learning_rate 1e-4 \
+  --lr_factor 1.0 \
   --warmup_steps 4000 \
   --grad_clip 1.0 \
   --label_smoothing 0.1 \
   --num_workers 4 \
-  --seed 42
+  --seed 42 \
+  --device cuda
+
 
 TRAIN_EXIT_CODE=$?
 
