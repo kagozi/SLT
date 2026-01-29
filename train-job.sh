@@ -63,7 +63,7 @@ echo "=========================================="
 echo "Starting Stage-1 RGB-only Training"
 echo "=========================================="
 
-python scripts.train_video_model.py \
+python scripts.train_video_model \
   --data_cache "$DATA_CACHE" \
   --output_dir "$RUN_DIR" \
   --epochs 50 \
