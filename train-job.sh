@@ -8,7 +8,6 @@
 
 #SBATCH --job-name=slt-stage1-train
 #SBATCH --output=slt-stage1-train-%j.out
-#SBATCH --error=slt-stage1-train-%j.err
 
 #SBATCH --get-user-env
 
@@ -63,7 +62,7 @@ echo "=========================================="
 echo "Starting Stage-1 RGB-only Training"
 echo "=========================================="
 
-python scripts.train_video_model \
+python -m scripts.train_video_model \
   --data_cache "$DATA_CACHE" \
   --output_dir "$RUN_DIR" \
   --epochs 50 \
@@ -101,7 +100,7 @@ echo "=========================================="
 BEST_MODEL="$RUN_DIR/best_model.pt"
 
 if [ -f "$BEST_MODEL" ]; then
-  python scripts.test_video_model \
+  python -m scripts.test_video_model \
     --checkpoint "$BEST_MODEL" \
     --data_cache "$DATA_CACHE" \
     --split test \
