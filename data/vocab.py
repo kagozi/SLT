@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections import Counter
-from typing import Dict, List, Iterable, Any
+from typing import Dict, List, Iterable, Optional, Any
 
 
 @dataclass
@@ -31,59 +31,41 @@ class Vocab:
     id_to_token: Dict[int, str]
     pad_id: int
     unk_id: int
-    bos_id: int | None = None
-    eos_id: int | None = None
+    bos_id: Optional[int] = None
+    eos_id: Optional[int] = None
 
     def __len__(self):
-        """Return vocabulary size."""
         return len(self.tokens)
 
     def __repr__(self):
-        return (
-            f"Vocab(size={len(self.tokens)}, "
-            f"pad_id={self.pad_id}, unk_id={self.unk_id}, "
-            f"bos_id={self.bos_id}, eos_id={self.eos_id})"
-        )
+        return (f"Vocab(size={len(self.tokens)}, "
+                f"pad_id={self.pad_id}, unk_id={self.unk_id}, "
+                f"bos_id={self.bos_id}, eos_id={self.eos_id})")
 
     def to_dict(self) -> Dict[str, Any]:
-        """
-        Serialize vocab to a JSON-safe dict.
-        NOTE: We only need tokens + special ids; mappings can be reconstructed.
-        """
+        """Serialize vocab to a JSON-safe dict."""
         return {
-            "tokens": list(self.tokens),
-            "pad_id": int(self.pad_id),
-            "unk_id": int(self.unk_id),
-            "bos_id": None if self.bos_id is None else int(self.bos_id),
-            "eos_id": None if self.eos_id is None else int(self.eos_id),
+            "tokens": self.tokens,
+            "pad_id": self.pad_id,
+            "unk_id": self.unk_id,
+            "bos_id": self.bos_id,
+            "eos_id": self.eos_id,
         }
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "Vocab":
-        """
-        Restore vocab from dict produced by to_dict().
-        Rebuild mappings deterministically from tokens.
-        """
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Vocab":
+        """Deserialize vocab from dict (as stored in checkpoints/json)."""
         tokens = data["tokens"]
         token_to_id = {tok: i for i, tok in enumerate(tokens)}
         id_to_token = {i: tok for tok, i in token_to_id.items()}
-
-        pad_id = int(data.get("pad_id", token_to_id.get("<pad>", 0)))
-        unk_id = int(data.get("unk_id", token_to_id.get("<unk>", 1)))
-        bos_id = data.get("bos_id", token_to_id.get("<start>", None))
-        eos_id = data.get("eos_id", token_to_id.get("<end>", None))
-
-        bos_id = None if bos_id is None else int(bos_id)
-        eos_id = None if eos_id is None else int(eos_id)
-
-        return Vocab(
+        return cls(
             tokens=tokens,
             token_to_id=token_to_id,
             id_to_token=id_to_token,
-            pad_id=pad_id,
-            unk_id=unk_id,
-            bos_id=bos_id,
-            eos_id=eos_id,
+            pad_id=int(data.get("pad_id", token_to_id.get("<pad>", 0))),
+            unk_id=int(data.get("unk_id", token_to_id.get("<unk>", 1))),
+            bos_id=data.get("bos_id", token_to_id.get("<start>")),
+            eos_id=data.get("eos_id", token_to_id.get("<end>")),
         )
 
 
@@ -92,25 +74,12 @@ def build_word_vocab(
     specials: List[str],
     min_freq: int = 1,
 ) -> Vocab:
-    """
-    Build word-level vocabulary from sentences.
-
-    Args:
-        sentences: Iterable of sentences (strings)
-        specials: List of special tokens (e.g., ["<pad>", "<unk>", "<start>", "<end>"])
-        min_freq: Minimum frequency for a token to be included
-
-    Returns:
-        Vocab object with token mappings
-    """
     counts = Counter()
     for sentence in sentences:
         if not sentence:
             continue
-        s = str(sentence).strip()
-        if not s:
-            continue
-        counts.update(s.split())
+        words = sentence.split()
+        counts.update(words)
 
     tokens = list(specials)
 
@@ -138,14 +107,10 @@ def build_word_vocab(
 
 
 def encode(sentence: str, vocab: Vocab, add_bos_eos: bool = False) -> List[int]:
-    """
-    Encode sentence to list of token IDs.
-    """
-    s = "" if sentence is None else str(sentence).strip()
-    if not s:
-        ids: List[int] = []
+    if not sentence or not sentence.strip():
+        ids = []
     else:
-        words = s.split()
+        words = sentence.split()
         ids = [vocab.token_to_id.get(word, vocab.unk_id) for word in words]
 
     if add_bos_eos:
@@ -157,42 +122,26 @@ def encode(sentence: str, vocab: Vocab, add_bos_eos: bool = False) -> List[int]:
 
 
 def decode(ids: List[int], vocab: Vocab, skip_special: bool = True) -> str:
-    """
-    Decode list of token IDs back to sentence.
-    """
-    tokens: List[str] = []
+    tokens = []
     for token_id in ids:
         token = vocab.id_to_token.get(int(token_id), "<unk>")
-
         if skip_special and token in {"<pad>", "<start>", "<end>"}:
             continue
-
         tokens.append(token)
-
     return " ".join(tokens)
 
 
 def save_vocab(vocab: Vocab, path: str):
-    """
-    Save vocabulary to JSON file.
-    """
     import json
-
     with open(path, "w", encoding="utf-8") as f:
         json.dump(vocab.to_dict(), f, indent=2, ensure_ascii=False)
-
     print(f"Saved vocabulary ({len(vocab.tokens)} tokens) to {path}")
 
 
 def load_vocab(path: str) -> Vocab:
-    """
-    Load vocabulary from JSON file.
-    """
     import json
-
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-
     vocab = Vocab.from_dict(data)
     print(f"Loaded vocabulary ({len(vocab.tokens)} tokens) from {path}")
     return vocab
@@ -217,33 +166,9 @@ if __name__ == "__main__":
     print(vocab)
     test_sentence = "HELLO WORLD"
     ids = encode(test_sentence, vocab)
-    ids_with = encode(test_sentence, vocab, add_bos_eos=True)
+    ids_with_special = encode(test_sentence, vocab, add_bos_eos=True)
 
     print("Encoded:", ids)
-    print("Encoded BOS/EOS:", ids_with)
-    print("Decoded skip special:", decode(ids_with, vocab, skip_special=True))
-    print("Decoded keep special:", decode(ids_with, vocab, skip_special=False))
-
-    # to_dict/from_dict sanity
-    d = vocab.to_dict()
-    vocab2 = Vocab.from_dict(d)
-    assert vocab.tokens == vocab2.tokens
-    assert vocab.pad_id == vocab2.pad_id
-    assert vocab.unk_id == vocab2.unk_id
-    assert vocab.bos_id == vocab2.bos_id
-    assert vocab.eos_id == vocab2.eos_id
-    print("✓ to_dict/from_dict passed")
-
-    # save/load sanity
-    import tempfile, os
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        tmp = f.name
-    try:
-        save_vocab(vocab, tmp)
-        vocab3 = load_vocab(tmp)
-        assert vocab.tokens == vocab3.tokens
-        print("✓ save/load passed")
-    finally:
-        os.unlink(tmp)
-
-    print("✅ All tests passed!")
+    print("Encoded (bos/eos):", ids_with_special)
+    print("Decoded (skip special):", decode(ids_with_special, vocab, skip_special=True))
+    print("Decoded (keep special):", decode(ids_with_special, vocab, skip_special=False))

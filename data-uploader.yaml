@@ -8,9 +8,16 @@ spec:
   - name: uploader
     image: ubuntu:22.04
     command: ["sleep", "infinity"]
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
     volumeMounts:
-    - mountPath: /data
-      name: slt-data
+    - name: slt-data
+      mountPath: /data
   volumes:
   - name: slt-data
     persistentVolumeClaim:

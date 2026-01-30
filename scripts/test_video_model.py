@@ -5,7 +5,8 @@ Usage:
     python scripts/test_video_model.py \
         --checkpoint runs/video_stage1/best_model.pt \
         --data_cache ../data_cache \
-        --split test
+        --split test \
+        --output ../runs/video_stage1/test_results.json
 """
 
 import argparse
@@ -25,13 +26,15 @@ from models.video_to_gloss import VideoToGlossModel
 from evaluation.metrics import compute_all_metrics
 
 
-def load_checkpoint(checkpoint_path: str, device: torch.device):
+def load_checkpoint(checkpoint_path: str, device: torch.device) -> dict:
     ckpt = torch.load(checkpoint_path, map_location=device)
     if "model_config" not in ckpt or "vocab" not in ckpt:
         raise ValueError(
             "Checkpoint missing 'model_config' or 'vocab'. "
             "Re-train using the corrected train script that saves them."
         )
+    if "model_state_dict" not in ckpt:
+        raise ValueError("Checkpoint missing 'model_state_dict'.")
     return ckpt
 
 
@@ -51,7 +54,7 @@ def build_model_from_ckpt(ckpt: dict, device: torch.device):
         decoder_nhead=cfg["nhead"],
         dropout=cfg["dropout"],
     )
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(ckpt["model_state_dict"], strict=True)
     model.to(device).eval()
     return model, vocab, cfg
 
@@ -74,8 +77,13 @@ def generate_predictions(model, dataloader, vocab, device, max_samples=None):
 
         for i in range(rgb.size(0)):
             ids = gen[i].tolist()
-            if vocab.eos_id in ids:
+            # remove BOS if present
+            if vocab.bos_id is not None and len(ids) > 0 and ids[0] == vocab.bos_id:
+                ids = ids[1:]
+            # stop at EOS
+            if vocab.eos_id is not None and vocab.eos_id in ids:
                 ids = ids[: ids.index(vocab.eos_id)]
+
             pred = decode_vocab(ids, vocab, skip_special=True)
             ref = batch["orth_texts"][i]
 
@@ -98,10 +106,16 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--save_json", type=str, default=None)
+
+    # ✅ Support BOTH flags (alias)
+    parser.add_argument("--save_json", type=str, default=None, help="Path to save detailed JSON")
+    parser.add_argument("--output", type=str, default=None, help="Alias for --save_json")
 
     args = parser.parse_args()
     device = torch.device(args.device)
+
+    # unify save flag
+    save_path = args.save_json or args.output
 
     ckpt = load_checkpoint(args.checkpoint, device)
     model, vocab, cfg = build_model_from_ckpt(ckpt, device)
@@ -123,6 +137,7 @@ def main():
         num_workers=args.num_workers,
         collate_fn=lambda b: collate_video_batch(b, pad_id=vocab.pad_id),
         pin_memory=(device.type == "cuda"),
+        persistent_workers=(args.num_workers > 0),
     )
 
     preds, refs, vids = generate_predictions(model, dl, vocab, device, max_samples=args.max_samples)
@@ -143,8 +158,8 @@ def main():
     print("=" * 80)
 
     # Save outputs if requested
-    if args.save_json:
-        out = Path(args.save_json)
+    if save_path:
+        out = Path(save_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
             json.dump(
