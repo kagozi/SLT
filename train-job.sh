@@ -52,42 +52,42 @@ python -c "import torch; print('Torch CUDA available:', torch.cuda.is_available(
 DATA_CACHE="../data_cache"
 RUN_DIR="../runs/video_stage1"
 
-mkdir -p "$RUN_DIR"
+# mkdir -p "$RUN_DIR"
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
-echo "=========================================="
-echo "Starting Stage-1 RGB-only Training"
-echo "=========================================="
+# echo "=========================================="
+# echo "Starting Stage-1 RGB-only Training"
+# echo "=========================================="
 
-python -m scripts.train_video_model \
-  --data_cache "$DATA_CACHE" \
-  --output_dir "$RUN_DIR" \
-  --epochs 50 \
-  --batch_size 8 \
-  --encoder_backbone resnet18 \
-  --encoder_layers 4 \
-  --decoder_layers 6 \
-  --nhead 8 \
-  --d_model 512 \
-  --dropout 0.1 \
-  --lr_factor 1.0 \
-  --warmup_steps 4000 \
-  --grad_clip 1.0 \
-  --label_smoothing 0.1 \
-  --num_workers 4 \
-  --seed 42 \
-  --device cuda
+# python -m scripts.train_video_model \
+#   --data_cache "$DATA_CACHE" \
+#   --output_dir "$RUN_DIR" \
+#   --epochs 50 \
+#   --batch_size 8 \
+#   --encoder_backbone resnet18 \
+#   --encoder_layers 4 \
+#   --decoder_layers 6 \
+#   --nhead 8 \
+#   --d_model 512 \
+#   --dropout 0.1 \
+#   --lr_factor 1.0 \
+#   --warmup_steps 4000 \
+#   --grad_clip 1.0 \
+#   --label_smoothing 0.1 \
+#   --num_workers 4 \
+#   --seed 42 \
+#   --device cuda
 
 
-TRAIN_EXIT_CODE=$?
+# TRAIN_EXIT_CODE=$?
 
-if [ $TRAIN_EXIT_CODE -ne 0 ]; then
-  echo "❌ Training failed with exit code $TRAIN_EXIT_CODE"
-  exit $TRAIN_EXIT_CODE
-fi
+# if [ $TRAIN_EXIT_CODE -ne 0 ]; then
+#   echo "❌ Training failed with exit code $TRAIN_EXIT_CODE"
+#   exit $TRAIN_EXIT_CODE
+# fi
 
 # ---------------------------------------------------------------------------
 # Optional: Evaluation on test set
