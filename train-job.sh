@@ -96,20 +96,21 @@ RUN_DIR="../runs/video_stage1"
 echo "=========================================="
 echo "Running evaluation on test split"
 echo "=========================================="
+python diagnose_training.py
 
-BEST_MODEL="$RUN_DIR/best_model.pt"
+# BEST_MODEL="$RUN_DIR/best_model.pt"
 
-if [ -f "$BEST_MODEL" ]; then
-  python -m scripts.test_video_model \
-    --checkpoint "$BEST_MODEL" \
-    --data_cache "$DATA_CACHE" \
-    --split test \
-    --batch_size 16 \
-    --num_workers 4 \
-    --output "$RUN_DIR/test_results.json"
-else
-  echo "⚠️ Best model not found, skipping evaluation"
-fi
+# if [ -f "$BEST_MODEL" ]; then
+#   python -m scripts.test_video_model \
+#     --checkpoint "$BEST_MODEL" \
+#     --data_cache "$DATA_CACHE" \
+#     --split test \
+#     --batch_size 16 \
+#     --num_workers 4 \
+#     --output "$RUN_DIR/test_results.json"
+# else
+#   echo "⚠️ Best model not found, skipping evaluation"
+# fi
 
 echo "=========================================="
 echo "Job finished at $(date)"

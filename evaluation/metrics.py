@@ -1,4 +1,4 @@
-# aslg_translation/evaluation/metrics.py
+# evaluation/metrics.py
 
 from __future__ import annotations
 
