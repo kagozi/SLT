@@ -52,8 +52,8 @@ python -c "import torch; print('Torch CUDA available:', torch.cuda.is_available(
 DATA_CACHE="../data_cache"
 RUN_DIR="../runs/video_stage1"
 
-# mkdir -p "$RUN_DIR"
-
+mkdir -p "$RUN_DIR"
+python diagnose_training.py
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
@@ -81,6 +81,30 @@ RUN_DIR="../runs/video_stage1"
 #   --seed 42 \
 #   --device cuda
 
+  python -m scripts.train_video_model \
+  --data_cache "$DATA_CACHE" \
+  --output_dir "$RUN_DIR" \
+  --epochs 100 \
+  --batch_size 8 \
+  --gradient_accumulation 4 \
+  --base_lr 0.0001 \
+  --max_lr 0.001 \
+  --warmup_epochs 5 \
+  --weight_decay 0.0001 \
+  --grad_clip 1.0 \
+  --label_smoothing 0.1 \
+  --min_freq 2 \
+  --patience 15 \
+  --encoder_backbone efficientnet_b0 \
+  --encoder_layers 4 \
+  --decoder_layers 6 \
+  --nhead 8 \
+  --d_model 512 \
+  --dropout 0.1 \
+  --num_workers 4 \
+  --seed 42 \
+  --amp
+
 
 # TRAIN_EXIT_CODE=$?
 
@@ -96,21 +120,21 @@ RUN_DIR="../runs/video_stage1"
 echo "=========================================="
 echo "Running evaluation on test split"
 echo "=========================================="
-python diagnose_training.py
 
-# BEST_MODEL="$RUN_DIR/best_model.pt"
 
-# if [ -f "$BEST_MODEL" ]; then
-#   python -m scripts.test_video_model \
-#     --checkpoint "$BEST_MODEL" \
-#     --data_cache "$DATA_CACHE" \
-#     --split test \
-#     --batch_size 16 \
-#     --num_workers 4 \
-#     --output "$RUN_DIR/test_results.json"
-# else
-#   echo "⚠️ Best model not found, skipping evaluation"
-# fi
+BEST_MODEL="$RUN_DIR/best_model.pt"
+
+if [ -f "$BEST_MODEL" ]; then
+  python -m scripts.test_video_model \
+    --checkpoint "$BEST_MODEL" \
+    --data_cache "$DATA_CACHE" \
+    --split test \
+    --batch_size 16 \
+    --num_workers 4 \
+    --output "$RUN_DIR/test_results.json"
+else
+  echo "⚠️ Best model not found, skipping evaluation"
+fi
 
 echo "=========================================="
 echo "Job finished at $(date)"
