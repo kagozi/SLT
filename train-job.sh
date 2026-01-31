@@ -53,7 +53,7 @@ DATA_CACHE="../data_cache"
 RUN_DIR="../runs/video_stage1"
 
 mkdir -p "$RUN_DIR"
-python diagnose_training.py
+# python diagnose_training.py
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ python diagnose_training.py
   --data_cache "$DATA_CACHE" \
   --output_dir "$RUN_DIR" \
   --epochs 100 \
-  --batch_size 8 \
+  --batch_size 4 \
   --gradient_accumulation 4 \
   --base_lr 0.0001 \
   --max_lr 0.001 \
