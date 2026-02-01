@@ -16,7 +16,7 @@
 #SBATCH --nodes=1
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 
 # Time limit
 #SBATCH --time=48:00:00
@@ -44,6 +44,8 @@ eval "$(mamba shell hook --shell bash)"
 mamba activate slt-multistream
 
 python -c "import torch; print('Torch CUDA available:', torch.cuda.is_available())"
+export NLTK_DATA=$PWD/.nltk_data
+python -c "import nltk; nltk.download('wordnet', download_dir='$NLTK_DATA'); nltk.download('omw-1.4', download_dir='$NLTK_DATA')"
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -84,8 +86,8 @@ mkdir -p "$RUN_DIR"
   python -m scripts.train_video_model \
   --data_cache "$DATA_CACHE" \
   --output_dir "$RUN_DIR" \
-  --epochs 100 \
-  --batch_size 4 \
+  --epochs 50 \
+  --batch_size 2 \
   --gradient_accumulation 4 \
   --base_lr 0.0001 \
   --max_lr 0.001 \
