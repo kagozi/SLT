@@ -105,24 +105,43 @@ class SpatialCNNEncoder(nn.Module):
         self.proj = nn.Linear(backbone_out_dim, d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [B, T, 3, H, W]
+    # def forward(self, x: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Args:
+    #         x: [B, T, 3, H, W]
 
-        Returns:
-            features: [B, T, D]
-        """
+    #     Returns:
+    #         features: [B, T, D]
+    #     """
+    #     B, T, C, H, W = x.shape
+    #     x = x.reshape(B * T, C, H, W)
+
+    #     feats = self.backbone(x)  # typically [B*T, D_backbone, 1, 1]
+    #     if feats.dim() == 4:
+    #         feats = feats.flatten(1)  # [B*T, D_backbone]
+
+    #     feats = self.proj(feats)
+    #     feats = self.dropout(feats)
+
+    #     feats = feats.reshape(B, T, -1)
+    #     return feats
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C, H, W = x.shape
         x = x.reshape(B * T, C, H, W)
 
-        feats = self.backbone(x)  # typically [B*T, D_backbone, 1, 1]
+        # Process in chunks to avoid OOM on the backbone
+        chunk_size = 32  # tune this down if still OOM
+        feats_list = []
+        for i in range(0, B * T, chunk_size):
+            feats_list.append(self.backbone(x[i:i+chunk_size]))
+        feats = torch.cat(feats_list, dim=0)
+
         if feats.dim() == 4:
-            feats = feats.flatten(1)  # [B*T, D_backbone]
+            feats = feats.flatten(1)
 
         feats = self.proj(feats)
         feats = self.dropout(feats)
-
         feats = feats.reshape(B, T, -1)
         return feats
 

@@ -11,6 +11,7 @@ Improved training script with fixes for common issues:
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -99,15 +100,24 @@ class ImprovedVideoTrainer:
         self.use_amp = use_amp
         self.scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
+    # def get_lr(self, epoch: int, total_epochs: int) -> float:
+    #     """Cosine annealing with warmup."""
+    #     if epoch < self.warmup_epochs:
+    #         # Linear warmup
+    #         return self.base_lr + (self.max_lr - self.base_lr) * (epoch / self.warmup_epochs)
+    #     else:
+    #         # Cosine annealing
+    #         progress = (epoch - self.warmup_epochs) / (total_epochs - self.warmup_epochs)
+    #         return self.base_lr + (self.max_lr - self.base_lr) * 0.5 * (1 + torch.cos(torch.tensor(progress * 3.14159)))
+    
     def get_lr(self, epoch: int, total_epochs: int) -> float:
-        """Cosine annealing with warmup."""
         if epoch < self.warmup_epochs:
-            # Linear warmup
-            return self.base_lr + (self.max_lr - self.base_lr) * (epoch / self.warmup_epochs)
+            # Start from near-zero, not base_lr
+            start_lr = self.base_lr * 0.01  # e.g., 1e-6
+            return start_lr + (self.max_lr - start_lr) * (epoch / self.warmup_epochs)
         else:
-            # Cosine annealing
-            progress = (epoch - self.warmup_epochs) / (total_epochs - self.warmup_epochs)
-            return self.base_lr + (self.max_lr - self.base_lr) * 0.5 * (1 + torch.cos(torch.tensor(progress * 3.14159)))
+            progress = (epoch - self.warmup_epochs) / max(1, total_epochs - self.warmup_epochs)
+            return self.base_lr + (self.max_lr - self.base_lr) * 0.5 * (1 + math.cos(math.pi * progress))
 
     def set_lr(self, lr: float):
         """Set learning rate for all param groups."""

@@ -89,11 +89,11 @@ mkdir -p "$RUN_DIR"
   --epochs 50 \
   --batch_size 2 \
   --gradient_accumulation 4 \
-  --base_lr 0.0001 \
-  --max_lr 0.001 \
+  --base_lr 5e-5 \
+  --max_lr 5e-4 \
   --warmup_epochs 5 \
   --weight_decay 0.0001 \
-  --grad_clip 1.0 \
+  --grad_clip 0.5 \
   --label_smoothing 0.1 \
   --min_freq 2 \
   --patience 15 \
@@ -101,7 +101,7 @@ mkdir -p "$RUN_DIR"
   --encoder_layers 4 \
   --decoder_layers 6 \
   --nhead 8 \
-  --d_model 512 \
+  --d_model 384 \
   --dropout 0.1 \
   --num_workers 4 \
   --seed 42 \
@@ -133,6 +133,7 @@ if [ -f "$BEST_MODEL" ]; then
     --split test \
     --batch_size 16 \
     --num_workers 4 \
+    --use_beam_search True \
     --output "$RUN_DIR/test_results.json"
 else
   echo "⚠️ Best model not found, skipping evaluation"
