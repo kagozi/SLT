@@ -152,6 +152,8 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
     # ✅ ADDED: Beam search arguments
+    parser.add_argument("--use_beam_search", type=bool, default=False,
+                        help="Whether to use beam search decoding") 
     parser.add_argument("--beam_size", type=int, default=0, 
                         help="Beam size (0 = greedy, >0 = beam search)")
     parser.add_argument("--length_penalty", type=float, default=0.6,
