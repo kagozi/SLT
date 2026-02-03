@@ -83,29 +83,29 @@ mkdir -p "$RUN_DIR"
 #   --seed 42 \
 #   --device cuda
 
-  python -m scripts.train_video_model \
-  --data_cache "$DATA_CACHE" \
-  --output_dir "$RUN_DIR" \
-  --epochs 50 \
-  --batch_size 2 \
-  --gradient_accumulation 4 \
-  --base_lr 5e-5 \
-  --max_lr 5e-4 \
-  --warmup_epochs 5 \
-  --weight_decay 0.0001 \
-  --grad_clip 0.5 \
-  --label_smoothing 0.1 \
-  --min_freq 2 \
-  --patience 15 \
-  --encoder_backbone efficientnet_b0 \
-  --encoder_layers 4 \
-  --decoder_layers 6 \
-  --nhead 8 \
-  --d_model 384 \
-  --dropout 0.1 \
-  --num_workers 4 \
-  --seed 42 \
-  --amp
+  # python -m scripts.train_video_model \
+  # --data_cache "$DATA_CACHE" \
+  # --output_dir "$RUN_DIR" \
+  # --epochs 50 \
+  # --batch_size 2 \
+  # --gradient_accumulation 4 \
+  # --base_lr 5e-5 \
+  # --max_lr 5e-4 \
+  # --warmup_epochs 5 \
+  # --weight_decay 0.0001 \
+  # --grad_clip 0.5 \
+  # --label_smoothing 0.1 \
+  # --min_freq 2 \
+  # --patience 15 \
+  # --encoder_backbone efficientnet_b0 \
+  # --encoder_layers 4 \
+  # --decoder_layers 6 \
+  # --nhead 8 \
+  # --d_model 384 \
+  # --dropout 0.1 \
+  # --num_workers 4 \
+  # --seed 42 \
+  # --amp
 
 
 # TRAIN_EXIT_CODE=$?
@@ -133,7 +133,7 @@ if [ -f "$BEST_MODEL" ]; then
     --split test \
     --batch_size 16 \
     --num_workers 4 \
-    --use_beam_search True \
+    --use_beam_search False \
     --output "$RUN_DIR/test_results.json"
 else
   echo "⚠️ Best model not found, skipping evaluation"
