@@ -123,21 +123,7 @@ echo "=========================================="
 echo "Running evaluation on test split"
 echo "=========================================="
 
-
-BEST_MODEL="$RUN_DIR/best_model.pt"
-
-if [ -f "$BEST_MODEL" ]; then
-  python -m scripts.test_video_model \
-    --checkpoint "$BEST_MODEL" \
-    --data_cache "$DATA_CACHE" \
-    --split test \
-    --batch_size 16 \
-    --num_workers 4 \
-    --use_beam_search False \
-    --output "$RUN_DIR/test_results.json"
-else
-  echo "⚠️ Best model not found, skipping evaluation"
-fi
+python train.py --data_cache data_cache --dataset phoenix2014t --data_root DATA_CACHE
 
 echo "=========================================="
 echo "Job finished at $(date)"
