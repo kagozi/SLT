@@ -5,6 +5,7 @@ channels:
   - conda-forge
 channel_priority: strict
 
+
 dependencies:
   # --- core ---
   - python=3.10
@@ -47,6 +48,7 @@ dependencies:
 
   # --- pip-only packages ---
   - pip:
+      - transformers>=4.30.0     
       # MediaPipe via pip is usually simplest
       - mediapipe==0.10.14
 

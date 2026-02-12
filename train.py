@@ -27,11 +27,11 @@ from transformers import BartTokenizer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from .configs.config import FullConfig, get_default_config
-from .models.multistream_slt import MultiStreamSLT
-from .data.phoenix_dataset import build_dataloaders
-from .utils.tokenizer import GlossTokenizer, ctc_greedy_decode
-from .utils.metrics import compute_wer, compute_bleu, evaluate_model
+from configs.config import FullConfig, get_default_config
+from models.multistream_slt import MultiStreamSLT
+from data.phoenix_dataset import build_dataloaders
+from utils.tokenizer import GlossTokenizer, ctc_greedy_decode
+from utils.metrics import compute_wer, compute_bleu, evaluate_model
 
 
 def cosine_lr_schedule(
