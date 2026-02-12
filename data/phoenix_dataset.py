@@ -1,254 +1,266 @@
 """
-PyTorch Dataset for PHOENIX-2014T video data.
-
-Loads preprocessed tensors (RGB, keypoints, hands) and annotations.
-Supports flexible stream selection for ablation studies.
-
-IMPORTANT:
-- In your manifests, `orth` is the gloss-like sequence (target for S2G/V2G).
-- `translation` is the spoken language text (not used in Stage 1 V2G).
+PyTorch Dataset for multistream SLT.
+Loads preprocessed .pt files (rgb, hands, kpts) aligned by manifest frame_indices.
 """
 
-from __future__ import annotations
-
 import json
-from pathlib import Path
-from typing import Dict, List, Optional
-
 import torch
-from torch.utils.data import Dataset
-from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+import numpy as np
 
 
-class PhoenixVideoDataset(Dataset):
+class PhoenixMultiStreamDataset(Dataset):
     """
-    PHOENIX-2014T dataset for video-to-gloss (orth) or video-to-text translation.
+    Loads aligned RGB, Hands, and Keypoints tensors from preprocessed .pt files.
 
-    Loads preprocessed tensors from:
-        <data_cache_dir>/phoenix2014t/{rgb,kpts,hands}/{split}/<video_id>.pt
+    Expected directory structure (from preprocessing scripts):
+      data_cache/<dataset>/rgb/<split>/<video_id>.pt      → [T, C, H, W]
+      data_cache/<dataset>/hands/<split>/<video_id>.pt    → [T, 2, C, Hh, Wh]
+      data_cache/<dataset>/kpts/<split>/<video_id>.pt     → [T, D]
 
-    Loads annotations from:
-        <data_cache_dir>/phoenix2014t/manifests/{split}_rgb_manifest.json
+    Manifest (from RGB preprocessing) provides:
+      video_id, orth (glosses), translation, frame_indices
     """
 
     def __init__(
         self,
         data_cache_dir: str,
-        split: str = "train",
-        gloss_vocab=None,  # Vocab object
-        use_rgb: bool = True,
-        use_keypoints: bool = False,
-        use_hands: bool = False,
-        max_length: Optional[int] = None,
-        strict: bool = True,
+        dataset: str,
+        split: str,
+        gloss_tokenizer=None,
+        translation_tokenizer=None,
+        num_frames: int = 64,
+        max_gloss_len: int = 75,
+        max_translation_len: int = 100,
+        augment: bool = False,
     ):
-        """
-        Args:
-            data_cache_dir: Path to preprocessed data root (e.g., "../data_cache")
-            split: "train", "dev", or "test"
-            gloss_vocab: Vocabulary for gloss tokens (built from `orth`)
-            use_rgb: Load RGB stream
-            use_keypoints: Load keypoints stream
-            use_hands: Load hands stream
-            max_length: Max token length for orth (None = no limit)
-            strict: If True, raise on missing tensor files. If False, return zero tensors.
-        """
-        self.data_cache = Path(data_cache_dir) / "phoenix2014t"
+        super().__init__()
+        self.data_cache = Path(data_cache_dir) / dataset
         self.split = split
-        self.gloss_vocab = gloss_vocab
+        self.num_frames = num_frames
+        self.max_gloss_len = max_gloss_len
+        self.max_translation_len = max_translation_len
+        self.augment = augment
+        self.gloss_tokenizer = gloss_tokenizer
+        self.translation_tokenizer = translation_tokenizer
 
-        self.use_rgb = use_rgb
-        self.use_keypoints = use_keypoints
-        self.use_hands = use_hands
-        self.max_length = max_length
-        self.strict = strict
+        # Load RGB manifest (primary — has annotations)
+        rgb_manifest_path = self.data_cache / "manifests" / f"{split}_rgb_manifest.json"
+        with open(rgb_manifest_path, "r") as f:
+            rgb_manifest = json.load(f)
 
-        manifest_path = self.data_cache / "manifests" / f"{split}_rgb_manifest.json"
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Manifest not found: {manifest_path}")
+        # Build sample list from successful entries
+        self.samples: List[Dict] = []
+        for entry in rgb_manifest:
+            if not entry.get("success", False):
+                continue
 
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
+            vid = entry["video_id"]
+            rgb_path = self.data_cache / "rgb" / split / f"{vid}.pt"
+            hands_path = self.data_cache / "hands" / split / f"{vid}.pt"
+            kpts_path = self.data_cache / "kpts" / split / f"{vid}.pt"
 
-        # Keep only successful samples with valid orth
-        def _valid_orth(s: Dict) -> bool:
-            orth = s.get("orth", None)
-            if orth is None:
-                return False
-            orth = str(orth).strip()
-            if orth == "" or orth == "-1":
-                return False
-            return True
+            # All three modalities must exist
+            if not (rgb_path.exists() and hands_path.exists() and kpts_path.exists()):
+                continue
 
-        self.samples = [s for s in manifest if s.get("success", False) and _valid_orth(s)]
+            self.samples.append({
+                "video_id": vid,
+                "rgb_path": str(rgb_path),
+                "hands_path": str(hands_path),
+                "kpts_path": str(kpts_path),
+                "orth": entry.get("orth", ""),         # gloss string
+                "translation": entry.get("translation", ""),
+                "signer": entry.get("signer", ""),
+            })
 
-        # Optional length filter
-        if max_length is not None:
-            self.samples = [s for s in self.samples if len(str(s["orth"]).split()) <= max_length]
-
-        print(f"[PhoenixVideoDataset] Loaded {len(self.samples)} samples from split='{split}'")
-
-        # Stream dirs
-        self.rgb_dir = self.data_cache / "rgb" / split
-        self.kpts_dir = self.data_cache / "kpts" / split
-        self.hands_dir = self.data_cache / "hands" / split
+        print(f"[{split}] Loaded {len(self.samples)} multistream samples "
+              f"(from {len(rgb_manifest)} RGB manifest entries)")
 
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _load_tensor(self, path: Path, fallback_shape: Optional[tuple] = None) -> torch.Tensor:
-        if path.exists():
-            return torch.load(path, map_location="cpu")
-        if self.strict:
-            raise FileNotFoundError(f"Missing tensor: {path}")
-        if fallback_shape is None:
-            raise FileNotFoundError(f"Missing tensor: {path} (no fallback_shape provided)")
-        return torch.zeros(*fallback_shape)
-
-    def __getitem__(self, idx: int) -> Dict:
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.samples[idx]
-        video_id = sample["video_id"]
 
-        orth = str(sample.get("orth", "")).strip()
-        translation = str(sample.get("translation", "")).strip()
+        # Load preprocessed tensors
+        rgb = torch.load(sample["rgb_path"], map_location="cpu")      # [T, C, H, W]
+        hands = torch.load(sample["hands_path"], map_location="cpu")  # [T, 2, C, Hh, Wh]
+        kpts = torch.load(sample["kpts_path"], map_location="cpu")    # [T, D]
 
-        data: Dict = {
-            "video_id": video_id,
-            "orth": orth,  # gloss-like target
-            "translation": translation,
-            "split": sample.get("split", self.split),
-            "sequence_dir": sample.get("sequence_dir", ""),
-            "frame_indices": sample.get("frame_indices", None),
+        # Ensure float32
+        rgb = rgb.float()
+        hands = hands.float()
+        kpts = kpts.float()
+
+        # Augmentation (training only)
+        if self.augment:
+            rgb, hands, kpts = self._augment(rgb, hands, kpts)
+
+        # Normalize keypoints per-frame (from reference: mean/var normalization)
+        kpts = self._normalize_kpts(kpts)
+
+        # Prepare output dict
+        out = {
+            "video_id": sample["video_id"],
+            "rgb": rgb,         # (T, C, H, W)
+            "hands": hands,     # (T, 2, C, Hh, Wh)
+            "kpts": kpts,       # (T, D)
+            "num_frames": torch.tensor(rgb.shape[0], dtype=torch.long),
         }
 
-        # Load streams
-        if self.use_rgb:
-            rgb_path = self.rgb_dir / f"{video_id}.pt"
-            # Expected shape: [T, 3, 256, 256]
-            data["rgb"] = self._load_tensor(rgb_path, fallback_shape=(64, 3, 256, 256))
+        # Tokenize glosses (for CTC target)
+        if self.gloss_tokenizer is not None and sample["orth"]:
+            gloss_ids = self.gloss_tokenizer.encode(sample["orth"])
+            out["gloss_ids"] = torch.tensor(gloss_ids[:self.max_gloss_len], dtype=torch.long)
+            out["gloss_length"] = torch.tensor(len(gloss_ids[:self.max_gloss_len]), dtype=torch.long)
 
-        if self.use_keypoints:
-            kpts_path = self.kpts_dir / f"{video_id}.pt"
-            # Expected shape: [T, D] e.g., [T, 498]
-            data["keypoints"] = self._load_tensor(kpts_path, fallback_shape=(64, 498))
+        # Tokenize translation (for BART target)
+        if self.translation_tokenizer is not None and sample["translation"]:
+            enc = self.translation_tokenizer(
+                sample["translation"],
+                max_length=self.max_translation_len,
+                truncation=True,
+                padding="max_length",
+                return_tensors="pt",
+            )
+            out["translation_ids"] = enc["input_ids"].squeeze(0)
+            out["translation_mask"] = enc["attention_mask"].squeeze(0)
 
-        if self.use_hands:
-            hands_path = self.hands_dir / f"{video_id}.pt"
-            # Expected shape: [T, 2, 3, 128, 128]
-            data["hands"] = self._load_tensor(hands_path, fallback_shape=(64, 2, 3, 128, 128))
+        return out
 
-        # Encode orth → ids
-        if self.gloss_vocab is not None:
-            from .vocab import encode
-            orth_ids = encode(orth, self.gloss_vocab, add_bos_eos=True)
-            data["orth_ids"] = torch.tensor(orth_ids, dtype=torch.long)
+    def _normalize_kpts(self, kpts: torch.Tensor) -> torch.Tensor:
+        """Per-frame normalization (from reference normalize function)."""
+        mean = kpts.mean(dim=-1, keepdim=True)
+        var = kpts.var(dim=-1, keepdim=True)
+        return (kpts - mean) / (var.sqrt() + 1e-6)
 
-        return data
+    def _augment(
+        self, rgb: torch.Tensor, hands: torch.Tensor, kpts: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Temporal augmentation (from reference resample + spatial_random_affine).
+        Applied consistently across all three streams.
+        """
+        T = rgb.shape[0]
 
-    def get_vocab_size(self) -> int:
-        if self.gloss_vocab is None:
-            raise ValueError("gloss_vocab is not set")
-        return len(self.gloss_vocab.tokens)
+        # Temporal resampling (stretch/compress uniformly across all streams)
+        if torch.rand(1).item() < 0.5:
+            rate = 0.8 + torch.rand(1).item() * 0.4  # [0.8, 1.2]
+            new_T = max(1, int(T * rate))
+            indices = torch.linspace(0, T - 1, new_T).long().clamp(0, T - 1)
+            rgb = rgb[indices]
+            hands = hands[indices]
+            kpts = kpts[indices]
+
+        # Spatial augmentation on keypoints (from reference spatial_random_affine)
+        if torch.rand(1).item() < 0.5:
+            # Scale
+            scale = 0.9 + torch.rand(1).item() * 0.2
+            kpts = kpts * scale
+
+            # Small translation
+            shift = (torch.rand(1, kpts.shape[-1]) - 0.5) * 0.1
+            kpts = kpts + shift
+
+        return rgb, hands, kpts
 
 
-def collate_video_batch(batch: List[Dict], pad_id: int = 0) -> Dict:
+def collate_multistream(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """
-    Collate function for video batches.
-
-    Pads:
-    - rgb: [B, T_max, 3, H, W]
-    - orth_ids: [B, L_max]
-
-    Creates:
-    - src_key_padding_mask: [B, T_max] (True = padding)
-    - tgt_key_padding_mask: [B, L_max] (True = padding)
+    Custom collate function that pads variable-length sequences.
     """
-    video_ids = [b["video_id"] for b in batch]
-    orth_texts = [b["orth"] for b in batch]
-    translations = [b.get("translation", "") for b in batch]
+    max_T = max(item["rgb"].shape[0] for item in batch)
+    B = len(batch)
 
-    collated: Dict = {
+    # Get shapes from first item
+    _, C_rgb, H_rgb, W_rgb = batch[0]["rgb"].shape
+    _, _, C_h, H_h, W_h = batch[0]["hands"].shape
+    D_kpts = batch[0]["kpts"].shape[-1]
+
+    # Pre-allocate padded tensors
+    rgb_padded = torch.zeros(B, max_T, C_rgb, H_rgb, W_rgb)
+    hands_padded = torch.zeros(B, max_T, 2, C_h, H_h, W_h)
+    kpts_padded = torch.zeros(B, max_T, D_kpts)
+    mask = torch.zeros(B, max_T, dtype=torch.bool)
+
+    video_ids = []
+    gloss_ids_list = []
+    gloss_lengths = []
+    trans_ids_list = []
+    trans_mask_list = []
+
+    for i, item in enumerate(batch):
+        T = item["rgb"].shape[0]
+        rgb_padded[i, :T] = item["rgb"]
+        hands_padded[i, :T] = item["hands"]
+        kpts_padded[i, :T] = item["kpts"]
+        mask[i, :T] = True
+
+        video_ids.append(item["video_id"])
+
+        if "gloss_ids" in item:
+            gloss_ids_list.append(item["gloss_ids"])
+            gloss_lengths.append(item["gloss_length"])
+
+        if "translation_ids" in item:
+            trans_ids_list.append(item["translation_ids"])
+            trans_mask_list.append(item["translation_mask"])
+
+    out = {
         "video_ids": video_ids,
-        "orth_texts": orth_texts,
-        "translations": translations,
+        "rgb": rgb_padded,
+        "hands": hands_padded,
+        "kpts": kpts_padded,
+        "mask": mask,
     }
 
-    # RGB
-    if "rgb" in batch[0]:
-        rgb_list = [b["rgb"] for b in batch]  # [T, 3, H, W]
-        rgb_padded = pad_sequence(rgb_list, batch_first=True, padding_value=0.0)
-        collated["rgb"] = rgb_padded
+    if gloss_ids_list:
+        # Pad gloss targets to same length
+        max_gl = max(g.shape[0] for g in gloss_ids_list)
+        gloss_padded = torch.zeros(B, max_gl, dtype=torch.long)
+        for i, g in enumerate(gloss_ids_list):
+            gloss_padded[i, :g.shape[0]] = g
+        out["gloss_targets"] = gloss_padded
+        out["gloss_lengths"] = torch.stack(gloss_lengths)
 
-        lengths = torch.tensor([x.size(0) for x in rgb_list], dtype=torch.long)
-        T_max = rgb_padded.size(1)
-        src_mask = torch.arange(T_max)[None, :] >= lengths[:, None]
-        collated["src_key_padding_mask"] = src_mask
+    if trans_ids_list:
+        out["translation_targets"] = torch.stack(trans_ids_list)
+        out["translation_mask"] = torch.stack(trans_mask_list)
 
-    # Keypoints
-    if "keypoints" in batch[0]:
-        kpts_list = [b["keypoints"] for b in batch]
-        kpts_padded = pad_sequence(kpts_list, batch_first=True, padding_value=0.0)
-        collated["keypoints"] = kpts_padded
-
-    # Hands
-    if "hands" in batch[0]:
-        hands_list = [b["hands"] for b in batch]
-        hands_padded = pad_sequence(hands_list, batch_first=True, padding_value=0.0)
-        collated["hands"] = hands_padded
-
-    # orth_ids
-    if "orth_ids" in batch[0]:
-        tgt_list = [b["orth_ids"] for b in batch]
-        tgt_padded = pad_sequence(tgt_list, batch_first=True, padding_value=pad_id)
-        collated["orth_ids"] = tgt_padded
-
-        tgt_lengths = torch.tensor([x.size(0) for x in tgt_list], dtype=torch.long)
-        L_max = tgt_padded.size(1)
-        tgt_mask = torch.arange(L_max)[None, :] >= tgt_lengths[:, None]
-        collated["tgt_key_padding_mask"] = tgt_mask
-
-    return collated
+    return out
 
 
-if __name__ == "__main__":
-    from .vocab import build_word_vocab
-
-    manifest_path = Path("data_cache") / "phoenix2014t" / "manifests" / "train_rgb_manifest.json"
-    manifest = json.load(open(manifest_path, "r", encoding="utf-8"))
-
-    orths = [s["orth"] for s in manifest if s.get("success") and str(s.get("orth", "")).strip() not in ("", "-1")]
-    gloss_vocab = build_word_vocab(
-        orths,
-        specials=["<pad>", "<unk>", "<start>", "<end>"],
-        min_freq=1,
-    )
-
-    dataset = PhoenixVideoDataset(
-        data_cache_dir="data_cache",
-        split="dev",
-        gloss_vocab=gloss_vocab,
-        use_rgb=True,
-        use_keypoints=False,
-        use_hands=False,
-        strict=False,
-    )
-
-    sample = dataset[0]
-    print("Video ID:", sample["video_id"])
-    print("RGB shape:", sample["rgb"].shape)
-    print("ORTH:", sample["orth"])
-    print("ORTH IDs:", sample["orth_ids"])
-
-    from torch.utils.data import DataLoader
-
-    loader = DataLoader(
-        dataset,
-        batch_size=4,
-        shuffle=False,
-        collate_fn=lambda b: collate_video_batch(b, pad_id=gloss_vocab.pad_id),
-    )
-    batch = next(iter(loader))
-    print("Batch RGB:", batch["rgb"].shape)
-    print("Batch ORTH IDs:", batch["orth_ids"].shape)
-    print("Src mask:", batch["src_key_padding_mask"].shape)
-    print("Tgt mask:", batch["tgt_key_padding_mask"].shape)
+def build_dataloaders(
+    data_cache_dir: str,
+    dataset: str,
+    gloss_tokenizer=None,
+    translation_tokenizer=None,
+    batch_size: int = 8,
+    num_workers: int = 4,
+    num_frames: int = 64,
+) -> Dict[str, DataLoader]:
+    """Build train/dev/test DataLoaders."""
+    loaders = {}
+    for split in ["train", "dev", "test"]:
+        ds = PhoenixMultiStreamDataset(
+            data_cache_dir=data_cache_dir,
+            dataset=dataset,
+            split=split,
+            gloss_tokenizer=gloss_tokenizer,
+            translation_tokenizer=translation_tokenizer,
+            num_frames=num_frames,
+            augment=(split == "train"),
+        )
+        loaders[split] = DataLoader(
+            ds,
+            batch_size=batch_size,
+            shuffle=(split == "train"),
+            num_workers=num_workers,
+            collate_fn=collate_multistream,
+            pin_memory=True,
+            drop_last=(split == "train"),
+        )
+    return loaders
