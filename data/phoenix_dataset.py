@@ -86,9 +86,14 @@ class PhoenixMultiStreamDataset(Dataset):
         sample = self.samples[idx]
 
         # Load preprocessed tensors
-        rgb = torch.load(sample["rgb_path"], map_location="cpu")      # [T, C, H, W]
-        hands = torch.load(sample["hands_path"], map_location="cpu")  # [T, 2, C, Hh, Wh]
-        kpts = torch.load(sample["kpts_path"], map_location="cpu")    # [T, D]
+        # rgb = torch.load(sample["rgb_path"], map_location="cpu")      # [T, C, H, W]
+        # hands = torch.load(sample["hands_path"], map_location="cpu")  # [T, 2, C, Hh, Wh]
+        # kpts = torch.load(sample["kpts_path"], map_location="cpu")    # [T, D]
+        # Load preprocessed tensors with weights_only=True for PyTorch 2.4+
+        rgb = torch.load(sample["rgb_path"], map_location="cpu", weights_only=True)      # [T, C, H, W]
+        hands = torch.load(sample["hands_path"], map_location="cpu", weights_only=True)  # [T, 2, C, Hh, Wh]
+        kpts = torch.load(sample["kpts_path"], map_location="cpu", weights_only=True)    # [T, D]
+
 
         # Ensure float32
         rgb = rgb.float()
