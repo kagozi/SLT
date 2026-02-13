@@ -3,13 +3,11 @@ channels:
   - pytorch
   - nvidia
   - conda-forge
-channel_priority: strict
-
-
 dependencies:
-  # --- core ---
   - python=3.10
   - pip
+  # Fix for GLIBCXX / libstdc++ errors on clusters
+  - libstdcxx-ng 
   - numpy>=1.23
   - scipy
   - pandas
@@ -17,48 +15,26 @@ dependencies:
   - pyyaml
   - rich
   - click
-
-  # --- vision / IO ---
-  # Use headless OpenCV on clusters to avoid X11/GUI dependency issues.
   - opencv=4.*=*headless*
   - pillow
   - ffmpeg
-
-  # --- plotting / debug (optional on headless nodes; safe to keep) ---
   - matplotlib
-
-  # --- pytorch (GPU) ---
-  # Pin these to reduce solver weirdness.
-  # If your cluster CUDA driver is not compatible with 12.1 runtime, adjust pytorch-cuda accordingly.
-  - pytorch=2.2.*
-  - torchvision=0.17.*
-  - torchaudio=2.2.*
+  # Matches PyTorch to a version Transformers 4.40+ accepts
+  - pytorch>=2.4.0
+  - torchvision
+  - torchaudio
   - pytorch-cuda=12.1
-
-  # --- misc ---
   - einops
   - sentencepiece
   - regex
   - scikit-learn
-
-  # --- metrics / NLP ---
   - sacrebleu
   - nltk
   - jiwer
-
-  # --- pip-only packages ---
   - pip:
-      - transformers>=4.30.0     
-      # MediaPipe via pip is usually simplest
+      - transformers>=4.40.0
       - mediapipe==0.10.14
-
-      # MediaPipe compatibility (very common fix)
       - protobuf<5
-
-      # YOLOv8 (optional; remove if you don't need it right now)
       - ultralytics>=8.2.0
-
-      # Quality-of-life / config
       - omegaconf
       - hydra-core
-      - tensorboard
