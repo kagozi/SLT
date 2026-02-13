@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 from transformers import BartTokenizer
 
@@ -144,8 +144,8 @@ class Trainer:
                 trans_targets = trans_targets.to(self.device)
 
             self.optimizer.zero_grad()
-
-            with autocast(enabled=self.cfg.mixed_precision):
+            
+            with autocast(device_type='cuda', enabled=self.cfg.mixed_precision):
                 output = self.model(
                     rgb=rgb, hands=hands, kpts=kpts, mask=mask,
                     gloss_targets=gloss_targets,
@@ -154,7 +154,8 @@ class Trainer:
                 )
                 loss = output["loss"]
 
-            self.scaler.scale(loss).backward()
+
+            self.scaler.scale(loss).backward() 
             self.scaler.unscale_(self.optimizer)
             nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip)
             self.scaler.step(self.optimizer)
