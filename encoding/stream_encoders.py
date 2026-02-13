@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
-from ..models.blocks import (
+from models.blocks import (
     Conv1DBlock,
     TransformerBlock,
     SinusoidalPositionalEncoding,

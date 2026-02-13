@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Dict
-from ..models.blocks import MultiHeadSelfAttention, TransformerBlock
+from models.blocks import MultiHeadSelfAttention, TransformerBlock
 
 
 class CrossAttentionFusionLayer(nn.Module):
