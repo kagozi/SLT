@@ -283,7 +283,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train MultiStream SLT")
     parser.add_argument("--data_cache", type=str, default="data_cache")
     parser.add_argument("--dataset", type=str, default="phoenix2014t")
-    parser.add_argument("--data_root", type=str, default="")
+    parser.add_argument("--data_root", type=str, default="../data_cache")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
