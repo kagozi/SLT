@@ -123,7 +123,7 @@ echo "=========================================="
 echo "Running evaluation on test split"
 echo "=========================================="
 
-python train.py --data_cache DATA_CACHE --dataset phoenix2014t --data_root DATA_CACHE
+python train.py --data_cache "$DATA_CACHE" --dataset phoenix2014t --data_root "$DATA_CACHE"
 
 echo "=========================================="
 echo "Job finished at $(date)"
