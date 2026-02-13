@@ -18,8 +18,8 @@ import torch.nn.functional as F
 from typing import Optional, Dict, Tuple
 from transformers import BartForConditionalGeneration, BartConfig
 
-from ..encoding.stream_encoders import RGBStreamEncoder, HandsStreamEncoder, KeypointsStreamEncoder
-from ..encoding.fusion import MultiStreamFusion
+from encoding.stream_encoders import RGBStreamEncoder, HandsStreamEncoder, KeypointsStreamEncoder
+from encoding.fusion import MultiStreamFusion
 
 
 class CTCGlossHead(nn.Module):
