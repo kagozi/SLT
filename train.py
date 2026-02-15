@@ -1,371 +1,571 @@
-"""
-Training script for MultiStream SLT.
-
-Three-stage training:
-  Stage 1 (epochs 0-freeze_epochs): CTC gloss recognition only (BART frozen)
-  Stage 2 (epochs freeze_epochs-end): Joint CTC + translation (BART unfrozen)
-
-Usage:
-    python train.py --data_cache data_cache --dataset phoenix2014t --data_root /path/to/phoenix
-"""
-
-import argparse
-import json
-import math
-import os
-import sys
 import time
-from pathlib import Path
-from typing import Dict, List, Optional
-
+import pandas as pd
+from collections import Counter
+import math
+from tabulate import tabulate
+import json
+from dataset import PhoenixSignDataset
+from models import SignLanguageTransformer
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.amp import GradScaler, autocast
-from tqdm import tqdm
-from transformers import BartTokenizer
+from utils import GlossTokenizer, Trainer, collate_fn, tokenizer
+from torch.utils.data import DataLoader
+import random
+from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from configs.config import FullConfig, get_default_config
-from models.multistream_slt import MultiStreamSLT
-from data.phoenix_dataset import build_dataloaders
-from utils.tokenizer import GlossTokenizer, ctc_greedy_decode
-from utils.metrics import compute_wer, compute_bleu, evaluate_model
-
-
-def cosine_lr_schedule(
-    epoch: int, warmup_epochs: int, lr_max: float, total_epochs: int
-) -> float:
-    """Cosine LR with exponential warmup (from reference)."""
-    if epoch < warmup_epochs:
-        return lr_max * 2 ** -(warmup_epochs - epoch)
-    progress = (epoch - warmup_epochs) / max(1, total_epochs - warmup_epochs)
-    return max(1e-7, 0.5 * (1.0 + math.cos(math.pi * progress)) * lr_max)
-
-
-class Trainer:
-    def __init__(
-        self,
-        model: MultiStreamSLT,
-        train_loader,
-        val_loader,
-        gloss_tokenizer: GlossTokenizer,
-        bart_tokenizer: BartTokenizer,
-        config: FullConfig,
-        device: str = "cuda",
-    ):
+class SignLanguageEvaluator:
+    """Comprehensive evaluation metrics for sign language recognition"""
+    
+    def __init__(self, model, test_loader, tokenizer, device='cuda'):
         self.model = model.to(device)
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.gloss_tok = gloss_tokenizer
-        self.bart_tok = bart_tokenizer
-        self.cfg = config.training
+        self.test_loader = test_loader
+        self.tokenizer = tokenizer
         self.device = device
-
-        # Optimizer: AdamW with weight decay (from reference)
-        self.optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=self.cfg.lr_max,
-            weight_decay=self.cfg.weight_decay,
-        )
-
-        # Mixed precision
-        self.scaler = GradScaler(enabled=self.cfg.mixed_precision)
-
-        # Checkpointing
-        self.save_dir = Path(self.cfg.save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-
-        self.best_wer = float("inf")
-        self.best_bleu = 0.0
-
-    def train(self):
-        freeze_epochs = 5  # Stage 1: CTC only
-
-        print(f"\n{'='*60}")
-        print(f"Starting training: {self.cfg.num_epochs} epochs")
-        print(f"Stage 1 (CTC only, BART frozen): epochs 0-{freeze_epochs-1}")
-        print(f"Stage 2 (Joint CTC + Translation): epochs {freeze_epochs}+")
-        print(f"{'='*60}\n")
-
-        # Stage 1: Freeze BART
-        self.model.freeze_translation()
-
-        for epoch in range(self.cfg.num_epochs):
-            # Unfreeze BART at stage transition
-            if epoch == freeze_epochs:
-                print(f"\n>>> Stage 2: Unfreezing BART translation head <<<\n")
-                self.model.unfreeze_translation()
-
-            # Update learning rate
-            lr = cosine_lr_schedule(epoch, self.cfg.warmup_epochs, self.cfg.lr_max, self.cfg.num_epochs)
-            for pg in self.optimizer.param_groups:
-                pg["lr"] = lr
-                pg["weight_decay"] = lr * 0.05  # from reference WD_RATIO
-
-            # Train
-            train_metrics = self._train_epoch(epoch)
-
-            # Evaluate
-            if (epoch + 1) % self.cfg.eval_every_epoch == 0:
-                val_metrics = self._evaluate(epoch)
-                self._maybe_save(epoch, val_metrics)
-
-            # Log
-            print(f"Epoch {epoch+1}/{self.cfg.num_epochs} | "
-                  f"lr={lr:.2e} | "
-                  f"train_loss={train_metrics['loss']:.4f} | "
-                  f"ctc={train_metrics.get('ctc_loss', 0):.4f} | "
-                  f"trans={train_metrics.get('trans_loss', 0):.4f}")
-
-    def _train_epoch(self, epoch: int) -> Dict[str, float]:
-        self.model.train()
-        total_loss = 0.0
-        total_ctc = 0.0
-        total_trans = 0.0
-        n_batches = 0
-
-        pbar = tqdm(self.train_loader, desc=f"Train E{epoch+1}")
-        for batch in pbar:
-            rgb = batch["rgb"].to(self.device)
-            hands = batch["hands"].to(self.device)
-            kpts = batch["kpts"].to(self.device)
-            mask = batch["mask"].to(self.device)
-
-            gloss_targets = batch.get("gloss_targets")
-            gloss_lengths = batch.get("gloss_lengths")
-            trans_targets = batch.get("translation_targets")
-
-            if gloss_targets is not None:
-                gloss_targets = gloss_targets.to(self.device)
-                gloss_lengths = gloss_lengths.to(self.device)
-            if trans_targets is not None:
-                trans_targets = trans_targets.to(self.device)
-
-            self.optimizer.zero_grad()
-            
-            with autocast(device_type='cuda', enabled=self.cfg.mixed_precision):
-                output = self.model(
-                    rgb=rgb, hands=hands, kpts=kpts, mask=mask,
-                    gloss_targets=gloss_targets,
-                    gloss_lengths=gloss_lengths,
-                    translation_targets=trans_targets,
-                )
-                loss = output["loss"]
-
-
-            self.scaler.scale(loss).backward() 
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
-            total_loss += loss.item()
-            total_ctc += output.get("ctc_loss", torch.tensor(0)).item()
-            total_trans += output.get("translation_loss", torch.tensor(0)).item()
-            n_batches += 1
-
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
-
-        return {
-            "loss": total_loss / max(1, n_batches),
-            "ctc_loss": total_ctc / max(1, n_batches),
-            "trans_loss": total_trans / max(1, n_batches),
-        }
-
+        
+        # WER costs (can be adjusted)
+        self.wer_costs = {'del': 3, 'ins': 3, 'sub': 4}
+        
     @torch.no_grad()
-    def _evaluate(self, epoch: int) -> Dict[str, float]:
+    def evaluate(self, beam_width=5, verbose=True):
+        """Run full evaluation on test set"""
         self.model.eval()
-        gloss_refs, gloss_hyps = [], []
-        trans_refs, trans_hyps = [], []
+        
+        all_predictions = []
+        all_targets = []
+        all_translations = []  # German text
+        all_names = []
+        inference_times = []
+        
+        for batch_idx, batch in enumerate(self.test_loader):
+            # Move to device
+            keypoints = batch['keypoints'].to(self.device)
+            mask = batch['mask'].to(self.device)
+            targets = batch['gloss']  # Keep on CPU for now
+            
+            # Measure inference time
+            start_time = time.time()
+            
+            # Forward pass
+            logits, mask_out = self.model(keypoints, mask)
+            
+            # Move logits to CPU for decoding
+            logits = logits.cpu()
+            mask_out = mask_out.cpu()
+            
+            inference_time = time.time() - start_time
+            inference_times.append(inference_time)
+            
+            # Calculate input lengths
+            input_lengths = mask_out.sum(dim=1).long()
+            
+            # Decode predictions
+            if beam_width > 1:
+                predictions = self._beam_search_decode(logits, input_lengths, beam_width)
+            else:
+                predictions = self._greedy_decode(logits, input_lengths)
+            
+            # Store results
+            all_predictions.extend(predictions)
+            all_targets.extend(batch['gloss_text'])
+            all_translations.extend(batch['translation'])
+            all_names.extend(batch['name'])
+            
+            if verbose and batch_idx % 10 == 0:
+                print(f"Processed batch {batch_idx}/{len(self.test_loader)}")
+        
+        # Calculate all metrics
+        metrics = self.calculate_all_metrics(
+            all_predictions, all_targets, all_translations, 
+            inference_times, all_names
+        )
+        
+        return metrics
+    
+    def _greedy_decode(self, logits, input_lengths):
+        """Greedy decoding with blank removal"""
+        # logits: (batch, time, vocab)
+        predictions = []
+        
+        for i in range(logits.shape[0]):
+            pred = logits[i, :input_lengths[i]].argmax(dim=-1).numpy()
+            
+            # Remove consecutive duplicates and blanks (0)
+            unique_pred = []
+            prev = -1
+            for p in pred:
+                if p != prev and p != 0:  # 0 is blank/pad
+                    unique_pred.append(p)
+                prev = p
+            
+            # Decode to text
+            pred_text = self.tokenizer.decode(unique_pred)
+            predictions.append(pred_text)
+        
+        return predictions
+    
+    def _beam_search_decode(self, logits, input_lengths, beam_width=5):
+        """Beam search decoding"""
+        # Simplified beam search - for production, use a proper implementation
+        # This is a placeholder - you might want to use a library like `ctcdecode`
+        return self._greedy_decode(logits, input_lengths)
+    
+    def calculate_bleu(self, predictions, targets, max_n=4):
+        """Calculate BLEU scores from 1 to max_n"""
+        
+        def get_ngrams(tokens, n):
+            """Extract n-grams from token list"""
+            return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
+        
+        bleu_scores = {}
+        
+        for n in range(1, max_n+1):
+            total_precision = 0
+            valid_sentences = 0
+            
+            for pred, target in zip(predictions, targets):
+                pred_tokens = pred.split()
+                target_tokens = target.split()
+                
+                if len(pred_tokens) < n or len(target_tokens) < n:
+                    continue
+                
+                # Get n-grams
+                pred_ngrams = Counter(get_ngrams(pred_tokens, n))
+                target_ngrams = Counter(get_ngrams(target_tokens, n))
+                
+                # Count matches
+                matches = sum((pred_ngrams & target_ngrams).values())
+                total_pred = sum(pred_ngrams.values())
+                
+                if total_pred > 0:
+                    precision = matches / total_pred
+                    total_precision += precision
+                    valid_sentences += 1
+            
+            # Calculate average precision for this n
+            if valid_sentences > 0:
+                bleu_scores[f'BLEU-{n}'] = total_precision / valid_sentences
+            else:
+                bleu_scores[f'BLEU-{n}'] = 0.0
+        
+        # Calculate geometric mean (BLEU score)
+        if all(v > 0 for v in bleu_scores.values()):
+            log_sum = sum(math.log(v) for v in bleu_scores.values())
+            bleu_scores['BLEU'] = math.exp(log_sum / len(bleu_scores))
+        else:
+            bleu_scores['BLEU'] = 0.0
+        
+        return bleu_scores
+    
+    def calculate_wer(self, predictions, targets):
+        """Calculate Word Error Rate"""
+        
+        def wer_single(pred, target):
+            # Dynamic programming implementation of Levenshtein distance
+            pred_words = pred.split()
+            target_words = target.split()
+            
+            d = np.zeros((len(target_words) + 1, len(pred_words) + 1))
+            
+            for i in range(len(target_words) + 1):
+                d[i, 0] = i * self.wer_costs['del']
+            for j in range(len(pred_words) + 1):
+                d[0, j] = j * self.wer_costs['ins']
+            
+            for i in range(1, len(target_words) + 1):
+                for j in range(1, len(pred_words) + 1):
+                    if target_words[i-1] == pred_words[j-1]:
+                        cost = 0
+                    else:
+                        cost = self.wer_costs['sub']
+                    
+                    d[i, j] = min(
+                        d[i-1, j] + self.wer_costs['del'],      # deletion
+                        d[i, j-1] + self.wer_costs['ins'],      # insertion
+                        d[i-1, j-1] + cost                       # substitution
+                    )
+            
+            # Normalize by max possible cost
+            max_cost = max(self.wer_costs.values()) * max(len(target_words), len(pred_words))
+            if max_cost > 0:
+                return d[len(target_words), len(pred_words)] / max_cost
+            return 0.0
+        
+        wer_scores = [wer_single(p, t) for p, t in zip(predictions, targets)]
+        return np.mean(wer_scores)
+    
+    def calculate_metrics_by_length(self, predictions, targets):
+        """Analyze performance based on sequence length"""
+        length_metrics = {}
+        
+        # Group by target length
+        length_groups = {
+            'short': [],    # 1-3 words
+            'medium': [],   # 4-7 words
+            'long': []      # 8+ words
+        }
+        
+        for pred, target in zip(predictions, targets):
+            length = len(target.split())
+            if length <= 3:
+                length_groups['short'].append((pred, target))
+            elif length <= 7:
+                length_groups['medium'].append((pred, target))
+            else:
+                length_groups['long'].append((pred, target))
+        
+        for group_name, group_data in length_groups.items():
+            if group_data:
+                group_preds, group_targets = zip(*group_data)
+                wer = self.calculate_wer(group_preds, group_targets)
+                bleu = self.calculate_bleu(group_preds, group_targets, max_n=4)
+                length_metrics[group_name] = {
+                    'count': len(group_data),
+                    'WER': wer,
+                    'BLEU': bleu['BLEU']
+                }
+        
+        return length_metrics
+    
+    def calculate_all_metrics(self, predictions, targets, translations, inference_times, names):
+        """Calculate all evaluation metrics"""
+        
+        # Basic statistics
+        metrics = {
+            'total_samples': len(predictions),
+            'avg_inference_time_ms': np.mean(inference_times) * 1000,
+            'std_inference_time_ms': np.std(inference_times) * 1000,
+            'fps': 1.0 / np.mean(inference_times)
+        }
+        
+        # BLEU scores
+        bleu_scores = self.calculate_bleu(predictions, targets, max_n=4)
+        metrics.update(bleu_scores)
+        
+        # WER
+        metrics['WER'] = self.calculate_wer(predictions, targets)
+        
+        # Exact match accuracy
+        exact_matches = sum(1 for p, t in zip(predictions, targets) if p == t)
+        metrics['exact_match_accuracy'] = exact_matches / len(predictions) if predictions else 0
+        
+        # Performance by sequence length
+        metrics['length_analysis'] = self.calculate_metrics_by_length(predictions, targets)
+        
+        # Save detailed results
+        self.save_detailed_results(predictions, targets, translations, names, metrics)
+        
+        return metrics
+    
+    def save_detailed_results(self, predictions, targets, translations, names, metrics):
+        """Save detailed predictions to CSV for analysis"""
+        results_df = pd.DataFrame({
+            'sequence_name': names,
+            'target_gloss': targets,
+            'predicted_gloss': predictions,
+            'german_translation': translations,
+            'correct': [p == t for p, t in zip(predictions, targets)]
+        })
+        
+        # Save to CSV
+        results_df.to_csv('test_predictions.csv', index=False)
+        
+        # Save metrics to JSON
+        with open('test_metrics.json', 'w') as f:
+            # Convert numpy values to Python types
+            metrics_serializable = {}
+            for k, v in metrics.items():
+                if isinstance(v, np.floating):
+                    metrics_serializable[k] = float(v)
+                elif isinstance(v, dict):
+                    metrics_serializable[k] = {sk: float(sv) if isinstance(sv, np.floating) else sv 
+                                               for sk, sv in v.items()}
+                else:
+                    metrics_serializable[k] = v
+            json.dump(metrics_serializable, f, indent=2)
+        
+        print(f"\n✅ Detailed results saved to test_predictions.csv and test_metrics.json")
+    
+    def print_metrics_table(self, metrics):
+        """Print metrics in a nice table format"""
+        
+        print("\n" + "="*60)
+        print("📊 TEST SET EVALUATION RESULTS")
+        print("="*60)
+        
+        # Basic stats
+        basic_table = [
+            ["Total Samples", metrics['total_samples']],
+            ["Avg Inference Time", f"{metrics['avg_inference_time_ms']:.2f} ms"],
+            ["FPS", f"{metrics['fps']:.2f}"],
+            ["Exact Match Accuracy", f"{metrics['exact_match_accuracy']:.2%}"]
+        ]
+        print(tabulate(basic_table, headers=["Metric", "Value"], tablefmt="grid"))
+        
+        # BLEU scores
+        print("\n📈 BLEU SCORES:")
+        bleu_table = []
+        for i in range(1, 5):
+            bleu_table.append([f"BLEU-{i}", f"{metrics[f'BLEU-{i}']:.4f}"])
+        bleu_table.append(["BLEU (geometric)", f"{metrics['BLEU']:.4f}"])
+        bleu_table.append(["WER", f"{metrics['WER']:.2%}"])
+        print(tabulate(bleu_table, headers=["Metric", "Score"], tablefmt="grid"))
+        
+        # Length analysis
+        if 'length_analysis' in metrics:
+            print("\n📏 PERFORMANCE BY SEQUENCE LENGTH:")
+            length_table = []
+            for length, stats in metrics['length_analysis'].items():
+                length_table.append([
+                    length.capitalize(),
+                    stats['count'],
+                    f"{stats['WER']:.2%}",
+                    f"{stats['BLEU']:.4f}"
+                ])
+            print(tabulate(length_table, 
+                          headers=["Length", "Count", "WER", "BLEU"], 
+                          tablefmt="grid"))
+        
+        # Sample predictions
+        print("\n🔍 SAMPLE PREDICTIONS (first 10):")
+        sample_df = pd.read_csv('test_predictions.csv').head(10)
+        print(tabulate(sample_df[['sequence_name', 'target_gloss', 'predicted_gloss', 'correct']],
+                      headers=['Sequence', 'Target', 'Predicted', 'Correct'],
+                      tablefmt='grid',
+                      showindex=False))
+        
+        print("="*60)
 
-        for batch in tqdm(self.val_loader, desc=f"Eval E{epoch+1}"):
-            rgb = batch["rgb"].to(self.device)
-            hands = batch["hands"].to(self.device)
-            kpts = batch["kpts"].to(self.device)
-            mask = batch["mask"].to(self.device)
 
-            # Gloss recognition via CTC
-            fused = self.model.encode(rgb, hands, kpts, mask)
-            gloss_logits = self.model.ctc_head(fused)
-            decoded_glosses = ctc_greedy_decode(gloss_logits)
-
-            if "gloss_targets" in batch:
-                for i, target in enumerate(batch["gloss_targets"]):
-                    ref = self.gloss_tok.decode(target.tolist())
-                    hyp = self.gloss_tok.decode(decoded_glosses[i])
-                    gloss_refs.append(ref)
-                    gloss_hyps.append(hyp)
-
-            # Translation via BART beam search
-            try:
-                token_ids = self.model.translate(rgb, hands, kpts, mask, beam_width=5)
-                for i in range(token_ids.shape[0]):
-                    hyp = self.bart_tok.decode(token_ids[i], skip_special_tokens=True)
-                    trans_hyps.append(hyp)
-
-                if "translation_targets" in batch:
-                    for target in batch["translation_targets"]:
-                        ref = self.bart_tok.decode(target, skip_special_tokens=True)
-                        trans_refs.append(ref)
-            except Exception:
-                pass  # Translation may fail during stage 1
-
-        metrics = evaluate_model(gloss_refs, gloss_hyps, trans_refs, trans_hyps)
-
-        print(f"\n--- Eval Epoch {epoch+1} ---")
-        if "wer" in metrics:
-            print(f"  WER:    {metrics['wer']:.4f}")
-        if "bleu-4" in metrics:
-            print(f"  BLEU-4: {metrics['bleu-4']:.4f}")
-        if "bleu-1" in metrics:
-            print(f"  BLEU-1: {metrics['bleu-1']:.4f}")
-
-        # Show a few examples
-        for i in range(min(3, len(gloss_refs))):
-            print(f"  Ref gloss:  {gloss_refs[i]}")
-            print(f"  Pred gloss: {gloss_hyps[i]}")
-            if i < len(trans_refs):
-                print(f"  Ref trans:  {trans_refs[i]}")
-                print(f"  Pred trans: {trans_hyps[i]}")
-            print("  ---")
-
+class AdvancedEvaluator(SignLanguageEvaluator):
+    """Extended evaluator with additional metrics from reference code"""
+    
+    def calculate_rouge(self, predictions, targets):
+        """ROUGE scores for translation quality"""
+        # Simplified ROUGE-1 calculation
+        rouge_scores = []
+        
+        for pred, target in zip(predictions, targets):
+            pred_words = set(pred.split())
+            target_words = set(target.split())
+            
+            if not target_words:
+                continue
+                
+            overlap = pred_words.intersection(target_words)
+            recall = len(overlap) / len(target_words) if target_words else 0
+            
+            rouge_scores.append(recall)
+        
+        return np.mean(rouge_scores) if rouge_scores else 0.0
+    
+    def calculate_character_error_rate(self, predictions, targets):
+        """CER at character level"""
+        # Similar to WER but at character level
+        total_edits = 0
+        total_chars = 0
+        
+        for pred, target in zip(predictions, targets):
+            # Levenshtein distance at character level
+            pred_chars = list(pred)
+            target_chars = list(target)
+            
+            # Simple DP for edit distance
+            d = np.zeros((len(target_chars) + 1, len(pred_chars) + 1))
+            for i in range(len(target_chars) + 1):
+                d[i, 0] = i
+            for j in range(len(pred_chars) + 1):
+                d[0, j] = j
+            
+            for i in range(1, len(target_chars) + 1):
+                for j in range(1, len(pred_chars) + 1):
+                    if target_chars[i-1] == pred_chars[j-1]:
+                        cost = 0
+                    else:
+                        cost = 1
+                    d[i, j] = min(d[i-1, j] + 1, d[i, j-1] + 1, d[i-1, j-1] + cost)
+            
+            total_edits += d[len(target_chars), len(pred_chars)]
+            total_chars += len(target_chars)
+        
+        return total_edits / total_chars if total_chars > 0 else 0.0
+    
+    def calculate_all_metrics(self, predictions, targets, translations, inference_times, names):
+        """Extended metrics including ROUGE and CER"""
+        metrics = super().calculate_all_metrics(predictions, targets, translations, inference_times, names)
+        
+        # Additional metrics
+        metrics['ROUGE-1'] = self.calculate_rouge(predictions, targets)
+        metrics['CER'] = self.calculate_character_error_rate(predictions, targets)
+        
         return metrics
 
-    def _maybe_save(self, epoch: int, metrics: Dict[str, float]):
-        wer = metrics.get("wer", float("inf"))
-        bleu = metrics.get("bleu-4", 0.0)
 
-        save_data = {
-            "epoch": epoch,
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "metrics": metrics,
-            "gloss_tokenizer": {"word2idx": self.gloss_tok.word2idx},
-        }
-
-        # Save latest
-        torch.save(save_data, self.save_dir / "latest.pt")
-
-        # Save best WER
-        if wer < self.best_wer:
-            self.best_wer = wer
-            torch.save(save_data, self.save_dir / "best_wer.pt")
-            print(f"  ✅ New best WER: {wer:.4f}")
-
-        # Save best BLEU
-        if bleu > self.best_bleu:
-            self.best_bleu = bleu
-            torch.save(save_data, self.save_dir / "best_bleu.pt")
-            print(f"  ✅ New best BLEU-4: {bleu:.4f}")
+def test_model(model_path, test_loader, tokenizer, device='cuda', beam_width=5):
+    """Load saved model and run evaluation"""
+    
+    # Load model
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Recreate model
+    model = SignLanguageTransformer(**checkpoint['config'])
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Evaluate
+    evaluator = AdvancedEvaluator(model, test_loader, tokenizer, device)
+    metrics = evaluator.evaluate(beam_width=beam_width)
+    evaluator.print_metrics_table(metrics)
+    
+    return metrics
 
 
-def build_gloss_tokenizer(data_cache: str, dataset: str) -> GlossTokenizer:
-    """Build gloss vocabulary from RGB manifest annotations."""
-    tok = GlossTokenizer()
-    gloss_strings = []
+def compare_with_baseline(our_metrics, baseline_results):
+    """Compare our model with reference implementation"""
+    
+    print("\n" + "="*60)
+    print("📊 COMPARISON WITH BASELINE (Reference Code)")
+    print("="*60)
+    
+    comparison = []
+    for metric in ['BLEU-1', 'BLEU-2', 'BLEU-3', 'BLEU-4', 'WER']:
+        if metric in our_metrics and metric in baseline_results:
+            improvement = our_metrics[metric] - baseline_results[metric]
+            if metric == 'WER':
+                improvement = -improvement  # Lower WER is better
+            
+            comparison.append([
+                metric,
+                f"{baseline_results[metric]:.4f}",
+                f"{our_metrics[metric]:.4f}",
+                f"{improvement:+.4f}",
+                "✅" if improvement > 0 else "❌" if improvement < 0 else "➡️"
+            ])
+    
+    print(tabulate(comparison, 
+                  headers=["Metric", "Baseline", "Ours", "Δ", ""],
+                  tablefmt="grid"))
+    
+    # Statistical significance test
+    if 'WER' in our_metrics and 'WER' in baseline_results:
+        rel_improvement = (baseline_results['WER'] - our_metrics['WER']) / baseline_results['WER']
+        print(f"\n📈 Relative WER improvement: {rel_improvement:.2%}")
 
-    for split in ["train", "dev", "test"]:
-        manifest_path = Path(data_cache) / dataset / "manifests" / f"{split}_rgb_manifest.json"
-        if not manifest_path.exists():
-            continue
-        with open(manifest_path) as f:
-            entries = json.load(f)
-        for e in entries:
-            if e.get("success") and e.get("orth"):
-                gloss_strings.append(e["orth"])
 
-    tok.build_vocab(gloss_strings, min_freq=1)
-    return tok
-
-
+# Updated main function with testing
 def main():
-    parser = argparse.ArgumentParser(description="Train MultiStream SLT")
-    parser.add_argument("--data_cache", type=str, default="data_cache")
-    parser.add_argument("--dataset", type=str, default="phoenix2014t")
-    parser.add_argument("--data_root", type=str, default="../data_cache")
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--num_frames", type=int, default=64)
-    parser.add_argument("--hidden_dim", type=int, default=256)
-    parser.add_argument("--fusion", type=str, default="cross_attention",
-                        choices=["cross_attention", "concat", "gated"])
-    parser.add_argument("--bart_model", type=str, default="facebook/bart-base")
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint")
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    # Seed
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
-    device = args.device if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
-
-    # Config
-    config = get_default_config(args.data_root)
-    config.training.num_epochs = args.epochs
-    config.training.batch_size = args.batch_size
-    config.training.lr_max = args.lr
-
-    # Tokenizers
-    print("Building gloss tokenizer...")
-    gloss_tok = build_gloss_tokenizer(args.data_cache, args.dataset)
-
-    print("Loading BART tokenizer...")
-    bart_tok = BartTokenizer.from_pretrained(args.bart_model)
-
-    # DataLoaders
-    print("Building dataloaders...")
-    loaders = build_dataloaders(
-        data_cache_dir=args.data_cache,
-        dataset=args.dataset,
-        gloss_tokenizer=gloss_tok,
-        translation_tokenizer=bart_tok,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        num_frames=args.num_frames,
+    # Configuration
+    root_dir = '../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/'
+    batch_size = 20
+    max_frames = 250
+    num_epochs = 100
+    
+    # Create datasets
+    print("📂 Loading datasets...")
+    train_dataset = PhoenixSignDataset(root_dir, split='train', max_frames=max_frames, augment=True)
+    val_dataset = PhoenixSignDataset(root_dir, split='dev', max_frames=max_frames, augment=False)
+    test_dataset = PhoenixSignDataset(root_dir, split='test', max_frames=max_frames, augment=False)
+    
+    # Create tokenizer
+    tokenizer = GlossTokenizer(train_dataset.glosses)
+    print(f"Vocabulary size: {tokenizer.vocab_size}")
+    
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True
     )
-
-    # Model
-    print("Building MultiStreamSLT model...")
-    model = MultiStreamSLT(
-        hidden_dim=args.hidden_dim,
-        num_frames=args.num_frames,
-        kpts_dim=498,
-        gloss_vocab_size=gloss_tok.vocab_size,
-        fusion_strategy=args.fusion,
-        bart_model=args.bart_model,
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True
     )
-
+    
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True
+    )
+    
+    # Create model
+    model = SignLanguageTransformer(
+        input_dim=225,
+        dim=192,
+        num_classes=tokenizer.vocab_size,
+        max_frames=max_frames,
+        dropout=0.2
+    )
+    
+    # Print model info
     total_params = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model params: {total_params:,} total, {trainable:,} trainable")
-
-    # Resume
-    if args.resume:
-        print(f"Resuming from {args.resume}")
-        ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt["model_state_dict"])
-
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\n🤖 Model created:")
+    print(f"   Total parameters: {total_params:,}")
+    print(f"   Trainable parameters: {trainable_params:,}")
+    
+    # Create trainer
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"💻 Using device: {device}")
+    
+    trainer = Trainer(model, train_loader, val_loader, tokenizer, device=device)
+    
     # Train
-    trainer = Trainer(
-        model=model,
-        train_loader=loaders["train"],
-        val_loader=loaders["dev"],
-        gloss_tokenizer=gloss_tok,
-        bart_tokenizer=bart_tok,
-        config=config,
-        device=device,
-    )
-    trainer.train()
+    print("\n🏋️ Starting training...")
+    trainer.train(num_epochs=num_epochs)
+    
+    # Save final model
+    model_path = 'final_model.pt'
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'tokenizer': tokenizer,
+        'config': {
+            'input_dim': 225,
+            'dim': 192,
+            'num_classes': tokenizer.vocab_size,
+            'max_frames': max_frames
+        }
+    }, model_path)
+    print(f"\n💾 Model saved to {model_path}")
+    
+    # Test on validation set (quick check)
+    print("\n🔍 Quick validation evaluation...")
+    val_evaluator = AdvancedEvaluator(model, val_loader, tokenizer, device)
+    val_metrics = val_evaluator.evaluate(beam_width=1, verbose=False)
+    val_evaluator.print_metrics_table(val_metrics)
+    
+    # Final test on test set
+    print("\n" + "🎯"*30)
+    print("🎯 FINAL TEST SET EVALUATION")
+    print("🎯"*30)
+    
+    test_evaluator = AdvancedEvaluator(model, test_loader, tokenizer, device)
+    test_metrics = test_evaluator.evaluate(beam_width=5, verbose=True)
+    test_evaluator.print_metrics_table(test_metrics)
+    
+    # Compare with baseline (if you have baseline results)
+    # baseline_results = {'BLEU-1': 0.45, 'BLEU-2': 0.32, 'BLEU-3': 0.25, 'BLEU-4': 0.18, 'WER': 0.35}
+    # compare_with_baseline(test_metrics, baseline_results)
+    
+    print("\n✨ Evaluation complete! Check test_predictions.csv and test_metrics.json for details.")
+    
+    return test_metrics
 
-    print("\n✅ Training complete!")
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    # Set random seeds for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
+    
+    # Run main
+    metrics = main()    
