@@ -8,7 +8,7 @@ from dataset import PhoenixSignDataset
 from models import SignLanguageTransformer
 import numpy as np
 import torch
-from utils import GlossTokenizer, Trainer, collate_fn, tokenizer
+from utils import GlossTokenizer, Trainer, collate_fn
 from torch.utils.data import DataLoader
 import random
 from pathlib import Path
