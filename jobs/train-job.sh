@@ -27,13 +27,6 @@
 
 ##############################################################################
 
-echo "=========================================="
-echo "SLT Stage-1 Training Job Started"
-echo "Date: $(date)"
-echo "Node: $(hostname)"
-echo "Working directory: $(pwd)"
-echo "=========================================="
-
 nvidia-smi
 
 # ---------------------------------------------------------------------------
@@ -43,22 +36,16 @@ nvidia-smi
 eval "$(mamba shell hook --shell bash)"
 mamba activate slt-multistream
 
-python -c "import torch; print('Torch CUDA available:', torch.cuda.is_available())"
-export NLTK_DATA=$PWD/.nltk_data
-python -c "import nltk; nltk.download('wordnet', download_dir='$NLTK_DATA'); nltk.download('omw-1.4', download_dir='$NLTK_DATA')"
+# python -c "import torch; print('Torch CUDA available:', torch.cuda.is_available())"
+# export NLTK_DATA=$PWD/.nltk_data
+# python -c "import nltk; nltk.download('wordnet', download_dir='$NLTK_DATA'); nltk.download('omw-1.4', download_dir='$NLTK_DATA')"
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-DATA_CACHE="../data_cache"
-
-mkdir -p "$RUN_DIR"
-
-python train.py --data_cache "$DATA_CACHE" --dataset phoenix2014t --data_root "$DATA_CACHE"
+python train.py 
 
 echo "=========================================="
 echo "Job finished at $(date)"
 echo "=========================================="
-
-nvidia-smi
