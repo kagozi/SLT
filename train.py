@@ -498,8 +498,19 @@ def main():
     )
     
     # Create model
+    # model = SignLanguageTransformer(
+    #     input_dim=225,
+    #     dim=192,
+    #     num_classes=tokenizer.vocab_size,
+    #     max_frames=max_frames,
+    #     dropout=0.2
+    # )
+    sample = train_dataset[0]
+    input_dim = sample['keypoints'].shape[-1]
+    print(f"Detected input_dim: {input_dim}")
+
     model = SignLanguageTransformer(
-        input_dim=225,
+        input_dim=input_dim,
         dim=192,
         num_classes=tokenizer.vocab_size,
         max_frames=max_frames,
@@ -529,7 +540,7 @@ def main():
         'model_state_dict': model.state_dict(),
         'tokenizer': tokenizer,
         'config': {
-            'input_dim': 225,
+            'input_dim': input_dim,
             'dim': 192,
             'num_classes': tokenizer.vocab_size,
             'max_frames': max_frames
