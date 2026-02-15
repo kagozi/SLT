@@ -44,7 +44,7 @@ mamba activate slt-multistream
 # Paths
 # ---------------------------------------------------------------------------
 
-python train.py 
+python preextract_keypoints.py --root_dir ../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/
 
 echo "=========================================="
 echo "Job finished at $(date)"
