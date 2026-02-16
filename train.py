@@ -510,7 +510,7 @@ def main():
     print(f"Detected input_dim: {input_dim}")
 
     model = SignLanguageTransformer(
-        input_dim=input_dim,
+        input_dim=165,
         dim=192,
         num_classes=tokenizer.vocab_size,
         max_frames=max_frames,
