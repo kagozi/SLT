@@ -510,7 +510,7 @@ def main():
     print(f"Detected input_dim: {input_dim}")
 
     model = SignLanguageTransformer(
-        input_dim=165,
+        input_dim=225,
         dim=192,
         num_classes=tokenizer.vocab_size,
         max_frames=max_frames,
@@ -564,8 +564,8 @@ def main():
     test_evaluator.print_metrics_table(test_metrics)
     
     # Compare with baseline (if you have baseline results)
-    # baseline_results = {'BLEU-1': 0.45, 'BLEU-2': 0.32, 'BLEU-3': 0.25, 'BLEU-4': 0.18, 'WER': 0.35}
-    # compare_with_baseline(test_metrics, baseline_results)
+    baseline_results = {'BLEU-1': 0.45, 'BLEU-2': 0.32, 'BLEU-3': 0.25, 'BLEU-4': 0.18, 'WER': 0.35}
+    compare_with_baseline(test_metrics, baseline_results)
     
     print("\n✨ Evaluation complete! Check test_predictions.csv and test_metrics.json for details.")
     
