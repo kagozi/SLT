@@ -8,7 +8,6 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 import numpy as np
 
 
@@ -24,7 +23,7 @@ class CTCLoss(nn.Module):
     def forward(self, logits, targets, input_lengths, target_lengths):
         """
         Args:
-            logits: (T, B, C) - log probabilities (time-major)
+            logits: (T, B, C) - raw logits (time-major)
             targets: (B, S) - target sequences
             input_lengths: (B,) - lengths of input sequences
             target_lengths: (B,) - lengths of target sequences
@@ -37,14 +36,20 @@ def collate_fn(batch):
     """Custom collate function for variable-length sequences"""
     keypoints = [item['keypoints'] for item in batch]
     glosses = [item['gloss'] for item in batch]
+    num_frames = [item['num_frames'] for item in batch]
     
     # Pad keypoints
     keypoints_padded = nn.utils.rnn.pad_sequence(keypoints, batch_first=True)
     
-    # Create mask
-    mask = (keypoints_padded.abs().sum(dim=-1) != 0).float()
+    # Create mask from actual frame counts (NOT from zero-checking, which
+    # breaks after chicken-neck normalization centers data around origin)
+    B = len(batch)
+    T = keypoints_padded.shape[1]
+    mask = torch.zeros(B, T, dtype=torch.float32)
+    for i, nf in enumerate(num_frames):
+        mask[i, :nf] = 1.0
     
-    # Stack glosses (will need to handle variable-length gloss sequences)
+    # Pad gloss token sequences
     glosses_padded = nn.utils.rnn.pad_sequence(glosses, batch_first=True, padding_value=0)
     
     return {
@@ -74,9 +79,12 @@ class Trainer:
         self.total_steps = len(train_loader) * 100  # 100 epochs
         self.warmup_steps = len(train_loader) * 5   # 5 epochs warmup
         
+        self.best_val_loss = float('inf')
+        
     def train_epoch(self, epoch):
         self.model.train()
         total_loss = 0
+        num_batches = 0
         
         for batch_idx, batch in enumerate(self.train_loader):
             # Move to device
@@ -91,17 +99,26 @@ class Trainer:
             # Forward pass
             logits, mask_out = self.model(keypoints, mask)
             
-            # Prepare for CTC loss
-            logits = logits.transpose(0, 1)  # (T, B, C)
+            # Prepare for CTC loss: (B, T, C) -> (T, B, C)
+            logits_ctc = logits.permute(1, 0, 2)
             
-            # Calculate input lengths (based on mask)
+            # Input lengths from mask (number of valid frames)
             input_lengths = mask_out.sum(dim=1).long().cpu()
             
-            # Calculate target lengths
+            # Target lengths (number of non-zero gloss tokens)
             target_lengths = (targets != 0).sum(dim=1).long().cpu()
             
+            # Skip batch if any target is empty or input shorter than target
+            if (target_lengths == 0).any():
+                continue
+            if (input_lengths < target_lengths).any():
+                continue
+            
             # Compute loss
-            loss = self.criterion(logits, targets, input_lengths, target_lengths)
+            loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
+            
+            if torch.isnan(loss) or torch.isinf(loss):
+                continue
             
             # Backward pass
             self.optimizer.zero_grad()
@@ -110,20 +127,23 @@ class Trainer:
             self.optimizer.step()
             
             total_loss += loss.item()
+            num_batches += 1
             
             if batch_idx % 50 == 0:
-                print(f'Epoch {epoch}, Batch {batch_idx}, Loss: {loss.item():.4f}')
+                lr = self.optimizer.param_groups[0]['lr']
+                print(f'  Epoch {epoch}, Batch {batch_idx}/{len(self.train_loader)}, '
+                      f'Loss: {loss.item():.4f}, LR: {lr:.2e}')
                 
-        return total_loss / len(self.train_loader)
+        return total_loss / max(1, num_batches)
     
     def _adjust_learning_rate(self, step):
         """Adjust learning rate with warmup and cosine decay"""
         if step < self.warmup_steps:
-            # Linear warmup
-            lr = 1e-3 * (step + 1) / self.warmup_steps
+            # Exponential warmup (from reference code — better than linear)
+            lr = 1e-3 * 2 ** -(self.warmup_steps - step)
         else:
             # Cosine decay
-            progress = (step - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+            progress = (step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             lr = 1e-3 * 0.5 * (1 + math.cos(math.pi * progress))
             
         for param_group in self.optimizer.param_groups:
@@ -133,6 +153,7 @@ class Trainer:
     def validate(self, epoch):
         self.model.eval()
         total_loss = 0
+        num_batches = 0
         all_predictions = []
         all_targets = []
         
@@ -142,37 +163,43 @@ class Trainer:
             targets = batch['gloss'].to(self.device)
             
             logits, mask_out = self.model(keypoints, mask)
-            logits = logits.transpose(0, 1)
+            logits_ctc = logits.permute(1, 0, 2)
             
             input_lengths = mask_out.sum(dim=1).long().cpu()
             target_lengths = (targets != 0).sum(dim=1).long().cpu()
             
-            loss = self.criterion(logits, targets, input_lengths, target_lengths)
-            total_loss += loss.item()
+            if (target_lengths > 0).all() and (input_lengths >= target_lengths).all():
+                loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
+                if not (torch.isnan(loss) or torch.isinf(loss)):
+                    total_loss += loss.item()
+                    num_batches += 1
             
             # Decode predictions
             predictions = self._decode_predictions(logits, input_lengths)
             all_predictions.extend(predictions)
-            all_targets.extend([self.tokenizer.decode(t) for t in targets])
+            all_targets.extend(batch['gloss_text'])
             
-        return total_loss / len(self.val_loader), all_predictions, all_targets
+        avg_loss = total_loss / max(1, num_batches)
+        return avg_loss, all_predictions, all_targets
     
-    def _decode_predictions(self, logits, input_lengths, beam_width=5):
-        """Greedy decoding (can be extended to beam search)"""
-        logits = logits.transpose(0, 1)  # (B, T, C)
+    def _decode_predictions(self, logits, input_lengths):
+        """Greedy CTC decoding"""
+        # logits: (B, T, C)
         predictions = []
         
         for i in range(logits.shape[0]):
-            pred = logits[i, :input_lengths[i]].argmax(dim=-1).cpu().numpy()
+            valid_len = min(input_lengths[i].item(), logits.shape[1])
+            pred = logits[i, :valid_len].argmax(dim=-1).cpu().numpy()
             
-            # Remove consecutive duplicates and blanks (0)
+            # CTC decode: remove consecutive duplicates, then remove blanks (0)
             unique_pred = []
             prev = -1
             for p in pred:
-                if p != prev and p != 0:
-                    unique_pred.append(p)
-                prev = p
-                
+                if p != prev:
+                    if p != 0:  # 0 is blank
+                        unique_pred.append(int(p))
+                    prev = p
+                    
             predictions.append(unique_pred)
             
         return predictions
@@ -186,12 +213,25 @@ class Trainer:
             
             # Print some examples
             if epoch % 5 == 0:
-                for i in range(min(3, len(predictions))):
-                    print(f'Target: {targets[i]}')
-                    print(f'Pred  : {self.tokenizer.decode(predictions[i])}')
-                    print('---')
+                for i in range(min(5, len(predictions))):
+                    pred_text = self.tokenizer.decode(predictions[i])
+                    print(f'  Target: {targets[i]}')
+                    print(f'  Pred  : {pred_text}')
+                    print('  ---')
                     
-            # Save checkpoint
+            # Save best checkpoint
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'train_loss': train_loss,
+                    'val_loss': val_loss,
+                }, 'best_model.pt')
+                print(f'  ✅ New best model saved (val_loss={val_loss:.4f})')
+                    
+            # Save periodic checkpoint
             if epoch % 10 == 0:
                 torch.save({
                     'epoch': epoch,
@@ -201,35 +241,76 @@ class Trainer:
                     'val_loss': val_loss,
                 }, f'checkpoint_epoch_{epoch}.pt')
                 
+
 class GlossTokenizer:
-    """Tokenizer for gloss sequences"""
+    """
+    WORD-LEVEL tokenizer for gloss sequences.
     
-    def __init__(self, glosses):
-        self.gloss_to_idx = {'<pad>': 0, '<blank>': 1}
-        self.idx_to_gloss = {0: '<pad>', 1: '<blank>'}
+    Splits gloss strings like "ICH OSTERN WETTER ZUFRIEDEN" into individual
+    word tokens: [ICH, OSTERN, WETTER, ZUFRIEDEN].
+    
+    Token 0 = <blank> (CTC blank)
+    Token 1 = <unk> (unknown words)
+    Token 2+ = gloss words
+    """
+    
+    def __init__(self, gloss_sentences=None, min_freq=1):
+        self.gloss_to_idx = {'<blank>': 0, '<unk>': 1}
+        self.idx_to_gloss = {0: '<blank>', 1: '<unk>'}
         
-        for gloss in glosses:
-            if gloss not in self.gloss_to_idx:
+        if gloss_sentences is not None:
+            self._build_vocab(gloss_sentences, min_freq)
+    
+    def _build_vocab(self, gloss_sentences, min_freq=1):
+        """Build word-level vocabulary from gloss sentences."""
+        word_counts = Counter()
+        for sentence in gloss_sentences:
+            if isinstance(sentence, str):
+                words = sentence.strip().upper().split()
+                word_counts.update(words)
+        
+        for word, count in word_counts.most_common():
+            if count >= min_freq and word not in self.gloss_to_idx:
                 idx = len(self.gloss_to_idx)
-                self.gloss_to_idx[gloss] = idx
-                self.idx_to_gloss[idx] = gloss
+                self.gloss_to_idx[word] = idx
+                self.idx_to_gloss[idx] = word
+        
+        print(f"GlossTokenizer: {len(self.gloss_to_idx)} word tokens "
+              f"(from {len(gloss_sentences)} sentences, {len(word_counts)} unique words)")
                 
-    def encode(self, gloss):
-        """Encode a gloss string to indices"""
-        if isinstance(gloss, str):
-            return torch.tensor([self.gloss_to_idx.get(gloss, 1)])  # 1 is blank
+    def encode(self, gloss_text):
+        """
+        Encode a gloss sentence string to a sequence of word token indices.
+        
+        "ICH OSTERN WETTER" → [42, 156, 203]
+        """
+        if isinstance(gloss_text, str):
+            words = gloss_text.strip().upper().split()
+            return torch.tensor(
+                [self.gloss_to_idx.get(w, 1) for w in words],
+                dtype=torch.long
+            )
         else:
-            return torch.tensor([self.gloss_to_idx.get(g, 1) for g in gloss])
+            # Already a list of words
+            return torch.tensor(
+                [self.gloss_to_idx.get(w, 1) for w in gloss_text],
+                dtype=torch.long
+            )
     
     def decode(self, indices):
-        """Decode indices to gloss string"""
+        """Decode token indices back to a gloss string."""
         if torch.is_tensor(indices):
             indices = indices.cpu().numpy()
             
         if isinstance(indices, (int, np.integer)):
-            return self.idx_to_gloss.get(indices, '<unk>')
+            return self.idx_to_gloss.get(int(indices), '<unk>')
         else:
-            return ' '.join([self.idx_to_gloss.get(i, '<unk>') for i in indices if i > 1])  # Skip pad/blank
+            words = []
+            for i in indices:
+                i = int(i)
+                if i > 1:  # Skip <blank>=0 and <unk>=1
+                    words.append(self.idx_to_gloss.get(i, '<unk>'))
+            return ' '.join(words)
     
     @property
     def vocab_size(self):
