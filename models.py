@@ -172,7 +172,7 @@ class SignLanguageTransformer(nn.Module):
         super().__init__()
         
         self.input_proj = nn.Linear(input_dim, dim, bias=False)
-        self.pos_encoding = PositionalEncoding(dim, max_frames)
+        self.pos_encoding = PositionalEncoding(dim, max_len=max_frames * 2)
         self.bn = nn.BatchNorm1d(dim, momentum=0.95)
         
         # Convolutional blocks

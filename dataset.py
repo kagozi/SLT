@@ -63,7 +63,15 @@ class PhoenixSignDataset(Dataset):
         # Apply augmentation for training
         if self.augment:
             keypoints = self._augment(keypoints)
-            
+        
+        # Enforce max_frames AFTER augmentation (resampling can change length)
+        T = keypoints.shape[0]
+        if T > self.max_frames:
+            keypoints = keypoints[:self.max_frames]
+        elif T < self.max_frames:
+            pad = torch.zeros(self.max_frames - T, keypoints.shape[1])
+            keypoints = torch.cat([keypoints, pad], dim=0)
+        
         # Get gloss label
         gloss = row['orth']
         gloss_indices = [self.gloss_to_idx[gloss]]
