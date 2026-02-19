@@ -8,34 +8,30 @@ from preprocessing import PhoenixKeypointExtractor
 
 
 class PhoenixSignDataset(Dataset):
-    """PyTorch Dataset for PHOENIX-2014T with augmentation"""
+    """PyTorch Dataset for PHOENIX-2014T with augmentation and optional translation targets."""
     
     COORDS_PER_JOINT = 3
     
     def __init__(self, root_dir, split='train', max_frames=250, augment=True,
-                 tokenizer=None):
+                 tokenizer=None, bart_tokenizer=None):
         self.root_dir = Path(root_dir)
         self.split = split
         self.max_frames = max_frames
         self.augment = augment and (split == 'train')
-        self.tokenizer = tokenizer  # Must be set before training
+        self.tokenizer = tokenizer
+        self.bart_tokenizer = bart_tokenizer  # For BART translation targets
         
-        # Load annotations
         csv_path = self.root_dir / 'annotations' / 'manual' / f'PHOENIX-2014-T.{split}.corpus.csv'
         self.df = pd.read_csv(csv_path, sep='|')
         
-        # Collect all unique gloss WORDS (not sentences) for vocab building
         all_words = set()
         for orth in self.df['orth']:
             if isinstance(orth, str):
                 all_words.update(orth.strip().upper().split())
         self.gloss_words = sorted(all_words)
         
-        # Cache for pre-extracted keypoints
         self.kps_dir = self.root_dir / 'features' / 'keypoints' / split
         self.kps_dir.mkdir(parents=True, exist_ok=True)
-        
-        # No extractor in dataset — use preextract_keypoints.py first
         self.extractor = None
         
     def __len__(self):
@@ -45,34 +41,24 @@ class PhoenixSignDataset(Dataset):
         row = self.df.iloc[idx]
         sequence_name = row['name']
         
-        # Load cached keypoints
         kps_path = self.kps_dir / f"{sequence_name}.npy"
-        
         if kps_path.exists():
             keypoints = np.load(kps_path)
         else:
-            # Lazy fallback extraction (shouldn't happen if preextracted)
             if self.extractor is None:
                 self.extractor = PhoenixKeypointExtractor()
             frame_dir = self.root_dir / 'features' / 'fullFrame-210x260px' / self.split / sequence_name
             keypoints = self.extractor.extract_from_frames(frame_dir, self.max_frames)
             np.save(kps_path, keypoints)
         
-        # Count actual non-padding frames BEFORE any augmentation
-        # (frames with all zeros are padding from preprocessing)
         frame_norms = np.linalg.norm(keypoints, axis=-1)
-        num_real_frames = int((frame_norms != 0).sum())
-        if num_real_frames == 0:
-            num_real_frames = 1  # at least 1 frame
-            
-        # Convert to tensor
+        num_real_frames = max(1, int((frame_norms != 0).sum()))
+        
         keypoints = torch.FloatTensor(keypoints)
         
-        # Apply augmentation
         if self.augment:
             keypoints = self._augment(keypoints)
         
-        # Enforce max_frames after augmentation (resampling can change length)
         T = keypoints.shape[0]
         if T > self.max_frames:
             keypoints = keypoints[:self.max_frames]
@@ -80,79 +66,77 @@ class PhoenixSignDataset(Dataset):
         elif T < self.max_frames:
             pad = torch.zeros(self.max_frames - T, keypoints.shape[1])
             keypoints = torch.cat([keypoints, pad], dim=0)
-            
-        # Get gloss label — WORD-LEVEL tokenization
+        
+        # Gloss tokens
         gloss_text = row['orth'] if isinstance(row['orth'], str) else ""
+        gloss_indices = self.tokenizer.encode(gloss_text) if self.tokenizer else torch.tensor([1], dtype=torch.long)
         
-        if self.tokenizer is not None:
-            gloss_indices = self.tokenizer.encode(gloss_text)
-        else:
-            # Fallback: return dummy
-            gloss_indices = torch.tensor([1], dtype=torch.long)
+        # Translation text
+        translation_text = row['translation'] if isinstance(row['translation'], str) else ""
         
-        return {
+        # BART translation token ids (if tokenizer provided)
+        translation_ids = None
+        if self.bart_tokenizer is not None:
+            encoded = self.bart_tokenizer(
+                translation_text, max_length=128, truncation=True,
+                padding=False, return_tensors='pt'
+            )
+            translation_ids = encoded['input_ids'].squeeze(0)
+        
+        result = {
             'keypoints': keypoints,
             'gloss': gloss_indices,
             'gloss_text': gloss_text,
-            'translation': row['translation'] if isinstance(row['translation'], str) else "",
+            'translation': translation_text,
             'name': sequence_name,
             'num_frames': num_real_frames,
         }
+        if translation_ids is not None:
+            result['translation_ids'] = translation_ids
+        
+        return result
     
-    def _to_3d(self, keypoints):
-        T, D = keypoints.shape
+    # ─── Augmentation ────────────────────────────────────────────────
+    
+    def _to_3d(self, kps):
+        T, D = kps.shape
         if D % self.COORDS_PER_JOINT != 0:
-            return keypoints.unsqueeze(-1)  # safety fallback
-        num_joints = D // self.COORDS_PER_JOINT
-        return keypoints.reshape(T, num_joints, self.COORDS_PER_JOINT)
+            return kps.unsqueeze(-1)
+        return kps.reshape(T, D // self.COORDS_PER_JOINT, self.COORDS_PER_JOINT)
     
-    def _to_flat(self, keypoints):
-        T = keypoints.shape[0]
-        return keypoints.reshape(T, -1)
+    def _to_flat(self, kps):
+        return kps.reshape(kps.shape[0], -1)
     
     def _augment(self, keypoints):
         kps_3d = self._to_3d(keypoints)
-        
         if random.random() < 0.5:
             kps_3d = self._spatial_random_affine(kps_3d)
-            
         keypoints = self._to_flat(kps_3d)
-        
         if random.random() < 0.5:
             keypoints = self._resample(keypoints, rate=(0.8, 1.2))
-            
         return keypoints
     
-    def _spatial_random_affine(self, keypoints, scale_range=(0.8, 1.2), 
-                               rotation_range=(-30, 30), 
+    def _spatial_random_affine(self, kps, scale_range=(0.8, 1.2),
+                               rotation_range=(-30, 30),
                                translation_range=(-0.1, 0.1)):
         if scale_range:
-            scale = random.uniform(*scale_range)
-            keypoints = keypoints * scale
-            
+            kps = kps * random.uniform(*scale_range)
         if rotation_range and random.random() < 0.5:
             angle = random.uniform(*rotation_range) * np.pi / 180
             c, s = np.cos(angle), np.sin(angle)
-            rot_matrix = torch.tensor([[c, -s], [s, c]], dtype=torch.float32)
+            rot = torch.tensor([[c, -s], [s, c]], dtype=torch.float32)
             center = torch.tensor([0.5, 0.5], dtype=torch.float32)
-            xy = keypoints[..., :2] - center
-            xy = xy @ rot_matrix.T
-            keypoints = torch.cat([xy + center, keypoints[..., 2:]], dim=-1)
-            
+            xy = kps[..., :2] - center
+            kps = torch.cat([xy @ rot.T + center, kps[..., 2:]], dim=-1)
         if translation_range:
-            translation = torch.FloatTensor(1, 1, 3).uniform_(*translation_range)
-            keypoints = keypoints + translation
-            
-        return keypoints
+            kps = kps + torch.FloatTensor(1, 1, 3).uniform_(*translation_range)
+        return kps
     
-    def _resample(self, keypoints, rate=(0.8, 1.2)):
-        rate_val = random.uniform(*rate)
-        current_len = keypoints.shape[0]
-        new_len = max(1, int(current_len * rate_val))
-            
-        indices = torch.linspace(0, current_len - 1, new_len)
-        indices_floor = indices.long()
-        indices_ceil = torch.clamp(indices_floor + 1, max=current_len - 1)
-        alpha = (indices - indices_floor.float()).unsqueeze(1)
-        
-        return (1 - alpha) * keypoints[indices_floor] + alpha * keypoints[indices_ceil]
+    def _resample(self, kps, rate=(0.8, 1.2)):
+        T = kps.shape[0]
+        new_len = max(1, int(T * random.uniform(*rate)))
+        idx = torch.linspace(0, T - 1, new_len)
+        fl = idx.long()
+        cl = torch.clamp(fl + 1, max=T - 1)
+        alpha = (idx - fl.float()).unsqueeze(1)
+        return (1 - alpha) * kps[fl] + alpha * kps[cl]
