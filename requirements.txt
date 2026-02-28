@@ -1,0 +1,7 @@
+torch
+numpy
+pandas
+tqdm
+opencv-contrib-python
+mediapipe
+transformers
