@@ -360,21 +360,26 @@ class BARTTranslationHead(nn.Module):
         self.max_len = max_len
         self._frozen = False
 
-    def forward(self, encoder_hidden, encoder_mask=None, labels=None):
-        # When frozen, detach encoder hidden so BART loss doesn't corrupt encoder
+    def _project(self, encoder_hidden):
+        """Project encoder hidden states and wrap for HuggingFace."""
+        from transformers.modeling_outputs import BaseModelOutput
         if self._frozen:
             projected = self.encoder_proj(encoder_hidden.detach())
         else:
             projected = self.encoder_proj(encoder_hidden)
-        outputs = self.bart(encoder_outputs=(projected,),
+        return BaseModelOutput(last_hidden_state=projected)
+
+    def forward(self, encoder_hidden, encoder_mask=None, labels=None):
+        encoder_out = self._project(encoder_hidden)
+        outputs = self.bart(encoder_outputs=encoder_out,
                             attention_mask=encoder_mask, labels=labels)
         return {"loss": outputs.loss, "logits": outputs.logits}
 
     def generate(self, encoder_hidden, encoder_mask=None,
                  beam_width=5, max_len=None, length_penalty=1.0):
-        projected = self.encoder_proj(encoder_hidden)
+        encoder_out = self._project(encoder_hidden)
         return self.bart.generate(
-            encoder_outputs=(projected,), attention_mask=encoder_mask,
+            encoder_outputs=encoder_out, attention_mask=encoder_mask,
             max_length=max_len or self.max_len, num_beams=beam_width,
             length_penalty=length_penalty, early_stopping=True)
 

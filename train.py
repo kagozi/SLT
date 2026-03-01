@@ -1,18 +1,22 @@
 """
 Train Sign Language Transformer with configurable modes.
 
-Example comparison runs:
-  # Run 1: CTC-only, greedy, 100 epochs (baseline)
-  python train.py --epochs 100 --decode greedy
+All results auto-save to ../results/<exp_name>/ and ../models/<exp_name>/.
 
-  # Run 2: CTC-only, beam search, 150 epochs
+Example runs:
+  # Exp 1: Sign2Gloss (CTC-only)
   python train.py --epochs 150 --decode beam --beam_width 10
 
-  # Run 3: CTC + BART translation, 150 epochs
-  python train.py --epochs 150 --decode beam --beam_width 10 --use_bart --bart_model facebook/bart-base
+  # Exp 2: Sign2Gloss2Text (joint CTC + BART)
+  python train.py --epochs 150 --decode beam --beam_width 10 \\
+      --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15
 
-  # Run 4: CTC + BART, more aggressive joint training
-  python train.py --epochs 150 --use_bart --ctc_weight 0.5 --freeze_bart_epochs 10
+  # Exp 3: Glossless Sign2Text (BART-only)
+  python train.py --epochs 150 --decode beam --beam_width 10 \\
+      --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
+
+  # Custom experiment name
+  python train.py --exp_name my_ablation --epochs 100
 """
 
 import time
@@ -21,16 +25,56 @@ import pandas as pd
 from collections import Counter
 import math
 from pathlib import Path
+from datetime import datetime
 import json
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import random
+import shutil
 
 from dataset import PhoenixSignDataset
 from models import SignLanguageTransformer
 from utils import GlossTokenizer, Trainer, collate_fn, ctc_greedy_decode, ctc_beam_decode
 
+
+# ─── Experiment Naming ───────────────────────────────────────────────
+
+def get_experiment_name(args):
+    """Generate a descriptive experiment name from args."""
+    if args.exp_name:
+        return args.exp_name
+    
+    if not args.use_bart:
+        mode = "sign2gloss"
+    elif args.ctc_weight == 0:
+        mode = "glossless_sign2text"
+    else:
+        mode = f"sign2gloss2text_ctc{args.ctc_weight}"
+    
+    parts = [
+        "phoenix",
+        mode,
+        f"e{args.epochs}",
+        f"d{args.dim}",
+        f"{args.decode}_bw{args.beam_width}",
+    ]
+    if args.use_bart:
+        parts.append(f"freeze{args.freeze_bart_epochs}")
+    
+    return "_".join(parts)
+
+
+def setup_directories(exp_name):
+    """Create result and model directories."""
+    results_dir = Path("../results") / exp_name
+    models_dir = Path("../models") / exp_name
+    results_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return results_dir, models_dir
+
+
+# ─── Evaluator ───────────────────────────────────────────────────────
 
 class SignLanguageEvaluator:
     def __init__(self, model, test_loader, tokenizer, device='cuda',
@@ -42,12 +86,12 @@ class SignLanguageEvaluator:
         self.device = device
         self.decode_mode = decode_mode
         self.beam_width = beam_width
-        self.wer_costs = {'del': 3, 'ins': 3, 'sub': 4}
 
     @torch.no_grad()
     def evaluate(self, verbose=True):
         self.model.eval()
-        all_preds, all_targets, all_trans_preds, all_trans_targets = [], [], [], []
+        all_preds, all_targets = [], []
+        all_trans_preds, all_trans_targets = [], []
         all_names = []
         inference_times = []
 
@@ -56,38 +100,31 @@ class SignLanguageEvaluator:
             mask = batch['mask'].to(self.device)
 
             start = time.time()
-            
             if self.model.use_bart:
                 output = self.model(keypoints, mask)
                 logits = output['logits']
                 mask_out = output['mask']
             else:
                 logits, mask_out = self.model(keypoints, mask)
-
             inference_times.append(time.time() - start)
 
             logits_cpu = logits.cpu()
             input_lengths = mask_out.sum(dim=1).long().cpu()
 
-            # CTC decode glosses
             if self.decode_mode == 'beam':
                 preds = ctc_beam_decode(logits_cpu, input_lengths, self.beam_width)
             else:
                 preds = ctc_greedy_decode(logits_cpu, input_lengths)
-
             for p in preds:
                 all_preds.append(self.tokenizer.decode(p))
             all_targets.extend(batch['gloss_text'])
             all_names.extend(batch['name'])
             
-            # BART translation
             if self.model.use_bart and self.bart_tokenizer is not None:
                 try:
-                    token_ids = self.model.translate(
-                        keypoints, mask, beam_width=self.beam_width)
+                    token_ids = self.model.translate(keypoints, mask, beam_width=self.beam_width)
                     for i in range(token_ids.shape[0]):
-                        text = self.bart_tokenizer.decode(
-                            token_ids[i], skip_special_tokens=True)
+                        text = self.bart_tokenizer.decode(token_ids[i], skip_special_tokens=True)
                         all_trans_preds.append(text)
                     all_trans_targets.extend(batch['translation'])
                 except Exception as e:
@@ -98,23 +135,22 @@ class SignLanguageEvaluator:
                 print(f"  Eval batch {batch_idx}/{len(self.test_loader)}")
 
         metrics = self._compute_metrics(all_preds, all_targets, inference_times)
-        
-        # Translation metrics
         if all_trans_preds:
             trans_bleu = self._compute_bleu(all_trans_preds, all_trans_targets)
             metrics['trans_BLEU-1'] = trans_bleu.get('BLEU-1', 0)
             metrics['trans_BLEU-4'] = trans_bleu.get('BLEU-4', 0)
+            metrics['trans_BLEU'] = trans_bleu.get('BLEU', 0)
 
-        # Save results
-        self._save_results(all_preds, all_targets, all_names,
-                           all_trans_preds, all_trans_targets, metrics)
-        return metrics
+        return metrics, {
+            'preds': all_preds, 'targets': all_targets, 'names': all_names,
+            'trans_preds': all_trans_preds, 'trans_targets': all_trans_targets,
+        }
 
     def _compute_metrics(self, preds, targets, times):
         metrics = {
             'total_samples': len(preds),
-            'avg_ms': np.mean(times) * 1000,
-            'WER': self._compute_wer(preds, targets),
+            'avg_inference_ms': float(np.mean(times) * 1000),
+            'WER': float(self._compute_wer(preds, targets)),
         }
         bleu = self._compute_bleu(preds, targets)
         metrics.update(bleu)
@@ -135,7 +171,7 @@ class SignLanguageEvaluator:
                     d[i,j] = min(d[i-1,j]+3, d[i,j-1]+3, d[i-1,j-1]+cost)
             mc = 4 * max(len(tw), len(pw))
             return d[len(tw), len(pw)] / mc if mc > 0 else 0.0
-        return np.mean([wer_single(p, t) for p, t in zip(preds, targets)])
+        return float(np.mean([wer_single(p, t) for p, t in zip(preds, targets)]))
 
     def _compute_bleu(self, preds, targets, max_n=4):
         def ngrams(tokens, n):
@@ -159,26 +195,6 @@ class SignLanguageEvaluator:
             scores['BLEU'] = 0.0
         return scores
 
-    def _save_results(self, preds, targets, names, trans_preds, trans_targets, metrics):
-        df = pd.DataFrame({
-            'name': names, 'target': targets, 'predicted': preds,
-            'correct': [p.strip() == t.strip() for p, t in zip(preds, targets)]
-        })
-        if trans_preds:
-            # Align lengths
-            while len(trans_preds) < len(names):
-                trans_preds.append('')
-                trans_targets.append('')
-            df['trans_target'] = trans_targets[:len(names)]
-            df['trans_pred'] = trans_preds[:len(names)]
-        df.to_csv('test_predictions.csv', index=False)
-        
-        ser = {k: float(v) if isinstance(v, (np.floating, np.integer)) else v
-               for k, v in metrics.items()}
-        with open('test_metrics.json', 'w') as f:
-            json.dump(ser, f, indent=2)
-        print(f"  ✅ Saved test_predictions.csv and test_metrics.json")
-
     def print_metrics(self, metrics):
         print("\n" + "="*60)
         print("📊 EVALUATION RESULTS")
@@ -190,11 +206,85 @@ class SignLanguageEvaluator:
         print(f"  BLEU-4:  {metrics.get('BLEU-4', 0):.4f}")
         print(f"  Exact:   {metrics.get('exact_match', 0):.2%}")
         if 'trans_BLEU-1' in metrics:
-            print(f"  --- Translation ---")
+            print(f"  --- Translation (German) ---")
             print(f"  Trans BLEU-1: {metrics['trans_BLEU-1']:.4f}")
             print(f"  Trans BLEU-4: {metrics['trans_BLEU-4']:.4f}")
         print("="*60)
 
+
+# ─── Save Results ────────────────────────────────────────────────────
+
+def save_experiment(args, exp_name, results_dir, models_dir,
+                    metrics, eval_data, model, tokenizer):
+    """Save all experiment artifacts to organized directories."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # ── Metrics JSON ──
+    metrics_out = {
+        'experiment': exp_name,
+        'timestamp': timestamp,
+        'args': vars(args),
+        'metrics': {k: float(v) if isinstance(v, (np.floating, np.integer)) else v
+                    for k, v in metrics.items()},
+    }
+    metrics_path = results_dir / f"metrics_{exp_name}.json"
+    with open(metrics_path, 'w') as f:
+        json.dump(metrics_out, f, indent=2)
+    
+    # ── Predictions CSV ──
+    df = pd.DataFrame({
+        'name': eval_data['names'],
+        'target_gloss': eval_data['targets'],
+        'predicted_gloss': eval_data['preds'],
+        'correct': [p.strip() == t.strip() 
+                    for p, t in zip(eval_data['preds'], eval_data['targets'])]
+    })
+    if eval_data['trans_preds']:
+        tp = list(eval_data['trans_preds'])
+        tt = list(eval_data['trans_targets'])
+        while len(tp) < len(df): tp.append('')
+        while len(tt) < len(df): tt.append('')
+        df['target_translation'] = tt[:len(df)]
+        df['predicted_translation'] = tp[:len(df)]
+    preds_path = results_dir / f"predictions_{exp_name}.csv"
+    df.to_csv(preds_path, index=False)
+    
+    # ── Final Model ──
+    model_path = models_dir / f"final_{exp_name}.pt"
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'tokenizer_vocab': tokenizer.gloss_to_idx,
+        'config': {
+            'input_dim': args.input_dim_detected,
+            'dim': args.dim,
+            'num_classes': tokenizer.vocab_size,
+            'max_frames': args.max_frames,
+            'use_bart': args.use_bart,
+            'bart_model': args.bart_model,
+            'ctc_weight': args.ctc_weight,
+        },
+        'args': vars(args),
+        'metrics': metrics,
+    }, model_path)
+    
+    # ── Copy best_model.pt ──
+    if Path('best_model.pt').exists():
+        shutil.copy2('best_model.pt', models_dir / f"best_{exp_name}.pt")
+    
+    # ── Save args for reproducibility ──
+    args_path = results_dir / f"args_{exp_name}.json"
+    with open(args_path, 'w') as f:
+        json.dump(vars(args), f, indent=2)
+    
+    print(f"\n📁 Experiment '{exp_name}' saved:")
+    print(f"   📊 {metrics_path}")
+    print(f"   📋 {preds_path}")
+    print(f"   🤖 {model_path}")
+    if (models_dir / f"best_{exp_name}.pt").exists():
+        print(f"   ⭐ {models_dir / f'best_{exp_name}.pt'}")
+
+
+# ─── Main ────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Train Sign Language Transformer")
@@ -221,11 +311,13 @@ def main():
     parser.add_argument('--use_bart', action='store_true', help='Enable BART Gloss→Text')
     parser.add_argument('--bart_model', type=str, default='facebook/bart-base')
     parser.add_argument('--ctc_weight', type=float, default=0.3,
-                        help='CTC loss weight in joint training (1-ctc_weight for BART)')
+                        help='CTC loss weight (1.0=CTC only, 0.0=BART only)')
     parser.add_argument('--freeze_bart_epochs', type=int, default=5,
                         help='Epochs to freeze BART before joint training')
     
-    # Checkpoint
+    # Experiment management
+    parser.add_argument('--exp_name', type=str, default=None,
+                        help='Custom experiment name (auto-generated if not set)')
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--eval_only', action='store_true')
     
@@ -235,13 +327,20 @@ def main():
     np.random.seed(args.seed)
     random.seed(args.seed)
     
-    print(f"{'='*60}")
-    print(f"Config: epochs={args.epochs}, decode={args.decode}, "
-          f"beam={args.beam_width}, bart={args.use_bart}")
+    # ─── Experiment Setup ───
+    exp_name = get_experiment_name(args)
+    results_dir, models_dir = setup_directories(exp_name)
+    
+    print(f"\n{'='*60}")
+    print(f"🧪 Experiment: {exp_name}")
+    print(f"   Results → {results_dir}")
+    print(f"   Models  → {models_dir}")
+    print(f"   Config:  epochs={args.epochs}, decode={args.decode}, "
+          f"beam={args.beam_width}, bart={args.use_bart}, ctc_w={args.ctc_weight}")
     print(f"{'='*60}")
     
     # ─── Tokenizers ───
-    print("Building tokenizers...")
+    print("\nBuilding tokenizers...")
     all_gloss = []
     for split in ['train', 'dev', 'test']:
         csv = Path(args.root_dir) / 'annotations' / 'manual' / f'PHOENIX-2014-T.{split}.corpus.csv'
@@ -253,7 +352,7 @@ def main():
     if args.use_bart:
         from transformers import BartTokenizer
         bart_tokenizer = BartTokenizer.from_pretrained(args.bart_model)
-        print(f"  BART tokenizer loaded: {args.bart_model}")
+        print(f"  BART tokenizer: {args.bart_model}")
     
     # ─── Datasets ───
     print("Loading datasets...")
@@ -266,6 +365,7 @@ def main():
     
     sample = train_ds[0]
     input_dim = sample['keypoints'].shape[-1]
+    args.input_dim_detected = input_dim
     print(f"  input_dim={input_dim}, vocab={tokenizer.vocab_size}, "
           f"train={len(train_ds)}, dev={len(val_ds)}, test={len(test_ds)}")
     
@@ -297,7 +397,6 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"💻 Device: {device}")
     
-    # Resume
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
@@ -315,42 +414,33 @@ def main():
         print(f"\n🏋️ Training for {args.epochs} epochs...")
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,
                       beam_width=args.beam_width)
-        
-        torch.save({
-            'model_state_dict': model.state_dict(),
-            'tokenizer_vocab': tokenizer.gloss_to_idx,
-            'config': {
-                'input_dim': input_dim, 'dim': args.dim,
-                'num_classes': tokenizer.vocab_size,
-                'max_frames': args.max_frames,
-                'use_bart': args.use_bart,
-                'bart_model': args.bart_model,
-            },
-            'args': vars(args),
-        }, 'final_model.pt')
-        print("💾 Saved final_model.pt")
     
     # ─── Evaluate ───
-    print(f"\n🎯 FINAL EVALUATION (decode={args.decode}, beam={args.beam_width})")
+    print(f"\n🎯 FINAL EVALUATION ({exp_name})")
     evaluator = SignLanguageEvaluator(
         model, test_loader, tokenizer, device,
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
     )
-    metrics = evaluator.evaluate(verbose=True)
+    metrics, eval_data = evaluator.evaluate(verbose=True)
     evaluator.print_metrics(metrics)
     
-    # Show samples
-    print("\n🔍 Samples:")
-    df = pd.read_csv('test_predictions.csv').head(10)
-    for _, row in df.iterrows():
-        m = "✅" if row['correct'] else "❌"
-        print(f"  {m} Target: {row['target']}")
-        print(f"     Pred:   {row['predicted']}")
-        if 'trans_pred' in row and pd.notna(row.get('trans_pred', None)):
-            print(f"     Trans:  {row['trans_pred']}")
+    # ─── Save Everything ───
+    save_experiment(args, exp_name, results_dir, models_dir,
+                    metrics, eval_data, model, tokenizer)
+    
+    # ─── Show Samples ───
+    print(f"\n🔍 Sample predictions:")
+    for i in range(min(10, len(eval_data['names']))):
+        correct = eval_data['preds'][i].strip() == eval_data['targets'][i].strip()
+        m = "✅" if correct else "❌"
+        print(f"  {m} Target: {eval_data['targets'][i]}")
+        print(f"     Pred:   {eval_data['preds'][i]}")
+        if eval_data['trans_preds'] and i < len(eval_data['trans_preds']):
+            print(f"     Trans:  {eval_data['trans_preds'][i]}")
         print()
     
+    print(f"\n✨ Experiment '{exp_name}' complete!")
     return metrics
 
 

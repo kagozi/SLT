@@ -548,6 +548,14 @@ class Trainer:
         if not self.use_bart:
             return
         
+        # Glossless mode (ctc_weight=0): skip Stage 1, go straight to BART training
+        if self.ctc_weight == 0:
+            if self.stage != 3:
+                self.stage = 3
+                print(f"\n  >>> Glossless mode: BART-only training (no CTC) <<<")
+                self.model.unfreeze_translation()
+            return
+        
         if epoch < self.freeze_bart_epochs:
             if self.stage != 1:
                 return
@@ -593,60 +601,85 @@ class Trainer:
 
             self.optimizer.zero_grad()
 
-            if self.use_bart and self.stage >= 2:
+            # ── Glossless mode: BART-only, no CTC ──
+            if self.use_bart and self.ctc_weight == 0:
                 trans_targets = batch.get('translation_ids')
-                if trans_targets is not None:
-                    trans_targets = trans_targets.to(self.device)
+                if trans_targets is None:
+                    continue
+                trans_targets = trans_targets.to(self.device)
                 
                 output = self.model(keypoints, mask, translation_targets=trans_targets)
-                logits = output['logits']
-                mask_out = output['mask']
-            else:
-                # Stage 1 or non-BART: CTC only, skip BART forward entirely
-                if self.use_bart:
-                    hidden, mask_out = self.model.encode(keypoints, mask)
-                    logits = self.model.head(hidden)
-                    output = {'logits': logits, 'mask': mask_out}
-                else:
-                    logits, mask_out = self.model(keypoints, mask)
-
-            # CTC loss
-            logits_ctc = logits.permute(1, 0, 2)
-            input_lengths = mask_out.sum(dim=1).long().cpu()
-            target_lengths = (targets != 0).sum(dim=1).long().cpu()
-
-            if (target_lengths == 0).any() or (input_lengths < target_lengths).any():
-                continue
-
-            ctc_loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
-            
-            if torch.isnan(ctc_loss) or torch.isinf(ctc_loss):
-                continue
-
-            # Total loss — scale carefully
-            if self.use_bart and self.stage >= 2 and isinstance(output, dict) and 'translation_loss' in output:
+                
+                if 'translation_loss' not in output:
+                    continue
                 trans_loss = output['translation_loss']
-                if not (torch.isnan(trans_loss) or torch.isinf(trans_loss)):
-                    loss = self.ctc_weight * ctc_loss + (1 - self.ctc_weight) * trans_loss
-                    total_trans += trans_loss.item()
+                if torch.isnan(trans_loss) or torch.isinf(trans_loss):
+                    continue
+                
+                loss = trans_loss
+                total_trans += trans_loss.item()
+                
+            # ── Joint CTC + BART or CTC-only ──
+            else:
+                if self.use_bart and self.stage >= 2:
+                    trans_targets = batch.get('translation_ids')
+                    if trans_targets is not None:
+                        trans_targets = trans_targets.to(self.device)
+                    
+                    output = self.model(keypoints, mask, translation_targets=trans_targets)
+                    logits = output['logits']
+                    mask_out = output['mask']
+                else:
+                    # Stage 1 or non-BART: CTC only
+                    if self.use_bart:
+                        hidden, mask_out = self.model.encode(keypoints, mask)
+                        logits = self.model.head(hidden)
+                        output = {'logits': logits, 'mask': mask_out}
+                    else:
+                        logits, mask_out = self.model(keypoints, mask)
+
+                # CTC loss
+                logits_ctc = logits.permute(1, 0, 2)
+                input_lengths = mask_out.sum(dim=1).long().cpu()
+                target_lengths = (targets != 0).sum(dim=1).long().cpu()
+
+                if (target_lengths == 0).any() or (input_lengths < target_lengths).any():
+                    continue
+
+                ctc_loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
+                
+                if torch.isnan(ctc_loss) or torch.isinf(ctc_loss):
+                    continue
+
+                # Combine losses
+                if self.use_bart and self.stage >= 2 and isinstance(output, dict) and 'translation_loss' in output:
+                    trans_loss = output['translation_loss']
+                    if not (torch.isnan(trans_loss) or torch.isinf(trans_loss)):
+                        loss = self.ctc_weight * ctc_loss + (1 - self.ctc_weight) * trans_loss
+                        total_trans += trans_loss.item()
+                    else:
+                        loss = ctc_loss
                 else:
                     loss = ctc_loss
-            else:
-                loss = ctc_loss
+                    
+                total_ctc += ctc_loss.item()
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
 
             total_loss += loss.item()
-            total_ctc += ctc_loss.item()
             num_batches += 1
 
             if batch_idx % 50 == 0:
                 lr = self.optimizer.param_groups[0]['lr']
                 msg = f'  Epoch {epoch} [S{self.stage}], Batch {batch_idx}/{len(self.train_loader)}, Loss: {loss.item():.4f}'
-                if self.use_bart and self.stage >= 2 and isinstance(output, dict) and 'translation_loss' in output:
-                    msg += f', CTC: {ctc_loss.item():.4f}, Trans: {output["translation_loss"].item():.4f}'
+                if total_ctc > 0:
+                    msg += f', CTC: {ctc_loss.item():.4f}'
+                if total_trans > 0 and self.use_bart:
+                    tl = output.get('translation_loss')
+                    if tl is not None:
+                        msg += f', Trans: {tl.item():.4f}'
                 msg += f', LR: {lr:.2e}'
                 print(msg)
 
@@ -672,6 +705,8 @@ class Trainer:
         num_batches = 0
         all_predictions = []
         all_targets = []
+        all_trans_preds = []
+        all_trans_targets = []
 
         for batch in self.val_loader:
             keypoints = batch['keypoints'].to(self.device)
@@ -685,26 +720,56 @@ class Trainer:
             else:
                 logits, mask_out = self.model(keypoints, mask)
 
-            logits_ctc = logits.permute(1, 0, 2)
-            input_lengths = mask_out.sum(dim=1).long().cpu()
-            target_lengths = (targets != 0).sum(dim=1).long().cpu()
+            # CTC val loss (skip in glossless mode)
+            if self.ctc_weight > 0:
+                logits_ctc = logits.permute(1, 0, 2)
+                input_lengths = mask_out.sum(dim=1).long().cpu()
+                target_lengths = (targets != 0).sum(dim=1).long().cpu()
 
-            if (target_lengths > 0).all() and (input_lengths >= target_lengths).all():
-                loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
-                if not (torch.isnan(loss) or torch.isinf(loss)):
-                    total_loss += loss.item()
-                    num_batches += 1
+                if (target_lengths > 0).all() and (input_lengths >= target_lengths).all():
+                    loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
+                    if not (torch.isnan(loss) or torch.isinf(loss)):
+                        total_loss += loss.item()
+                        num_batches += 1
 
-            # Decode
-            if decode_mode == 'beam':
-                preds = ctc_beam_decode(logits.cpu(), input_lengths, beam_width)
-            else:
-                preds = ctc_greedy_decode(logits.cpu(), input_lengths)
-            
-            all_predictions.extend(preds)
-            all_targets.extend(batch['gloss_text'])
+                # CTC decode
+                if decode_mode == 'beam':
+                    preds = ctc_beam_decode(logits.cpu(), input_lengths, beam_width)
+                else:
+                    preds = ctc_greedy_decode(logits.cpu(), input_lengths)
+                all_predictions.extend(preds)
+                all_targets.extend(batch['gloss_text'])
 
-        return total_loss / max(1, num_batches), all_predictions, all_targets
+            # BART translation eval (for glossless or joint mode)
+            if self.use_bart and self.bart_tokenizer is not None and self.stage >= 2:
+                try:
+                    token_ids = self.model.translate(keypoints, mask, beam_width=beam_width)
+                    for i in range(token_ids.shape[0]):
+                        text = self.bart_tokenizer.decode(token_ids[i], skip_special_tokens=True)
+                        all_trans_preds.append(text)
+                    all_trans_targets.extend(batch['translation'])
+                    
+                    # For glossless mode, use translation loss as val_loss
+                    if self.ctc_weight == 0:
+                        trans_targets = batch.get('translation_ids')
+                        if trans_targets is not None:
+                            trans_targets = trans_targets.to(self.device)
+                            t_out = self.model(keypoints, mask, translation_targets=trans_targets)
+                            if 'translation_loss' in t_out:
+                                tl = t_out['translation_loss']
+                                if not (torch.isnan(tl) or torch.isinf(tl)):
+                                    total_loss += tl.item()
+                                    num_batches += 1
+                except Exception:
+                    pass
+
+        avg_loss = total_loss / max(1, num_batches)
+        
+        # Return translation predictions for glossless mode
+        if self.ctc_weight == 0 and all_trans_preds:
+            return avg_loss, all_trans_preds, all_trans_targets
+        
+        return avg_loss, all_predictions, all_targets
 
     def train(self, num_epochs=100, decode_mode='greedy', beam_width=5):
         for epoch in range(num_epochs):
@@ -719,8 +784,14 @@ class Trainer:
 
             if epoch % 5 == 0:
                 for i in range(min(3, len(predictions))):
-                    pred_text = self.tokenizer.decode(predictions[i])
-                    print(f'  Target: {targets[i]}')
+                    # Glossless: predictions are already strings
+                    # CTC: predictions are token id lists
+                    if isinstance(predictions[i], str):
+                        pred_text = predictions[i]
+                    else:
+                        pred_text = self.tokenizer.decode(predictions[i])
+                    target_text = targets[i] if isinstance(targets[i], str) else str(targets[i])
+                    print(f'  Target: {target_text}')
                     print(f'  Pred  : {pred_text}')
                     print('  ---')
 

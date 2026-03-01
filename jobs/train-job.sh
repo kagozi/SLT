@@ -45,21 +45,16 @@ mamba activate slt-multistream
 # ---------------------------------------------------------------------------
 
 # python preextract_keypoints.py --root_dir ../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/
-# Run 1: CTC-only, greedy, 100 epochs (baseline)
-# python train.py --epochs 100 --decode greedy
+# Exp 1: Sign2Gloss (CTC-only baseline, fastest)
+# python train.py --epochs 150 --decode beam --beam_width 10
 
-# Run 2: CTC-only, beam search, 150 epochs
+# Exp 2: Sign2Gloss2Text (joint CTC + BART, 3-stage training)
 python train.py --epochs 150 --decode beam --beam_width 10 \
     --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15
 
-    
-python train.py --epochs 150 --decode beam --beam_width 10
-
-# Run 3: CTC + BART translation, 150 epochs
-# python train.py --epochs 150 --decode beam --beam_width 10 --use_bart --bart_model facebook/bart-base
-
-# Run 4: CTC + BART, more aggressive joint training
-# python train.py --epochs 150 --use_bart --ctc_weight 0.5 --freeze_bart_epochs 10
+# Exp 3: Glossless Sign2Text (BART-only, no CTC)
+# python train.py --epochs 150 --decode beam --beam_width 10 \
+#     --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
 
 
 
