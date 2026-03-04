@@ -57,6 +57,11 @@ python train.py --epochs 150 --decode beam --beam_width 10 \
 #     --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
 
 
+## American Sign Language (ASL)
+python train.py --dataset how2sign \\
+       ../HowToSign/how2sign_holistic_features \\
+      --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0 \\
+      --max_frames 300 --epochs 150 --decode beam --beam_width 10
 
 echo "=========================================="
 echo "Job finished at $(date)"
