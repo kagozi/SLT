@@ -3,7 +3,7 @@ Train Sign Language Transformer with configurable modes.
 
 All results auto-save to ../results/<exp_name>/ and ../models/<exp_name>/.
 
-Example runs:
+PHOENIX-2014-T examples:
   # Exp 1: Sign2Gloss (CTC-only)
   python train.py --epochs 150 --decode beam --beam_width 10
 
@@ -14,6 +14,19 @@ Example runs:
   # Exp 3: Glossless Sign2Text (BART-only)
   python train.py --epochs 150 --decode beam --beam_width 10 \\
       --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
+
+How2Sign examples:
+  # Exp 4: How2Sign BART-only (glossless)
+  python train.py --dataset how2sign \\
+      --root_dir path/to/how2sign_holistic_features \\
+      --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0 \\
+      --max_frames 300 --epochs 150 --decode beam --beam_width 10
+
+  # Exp 5: How2Sign with pseudo-glosses (after discovery)
+  python train.py --dataset how2sign \\
+      --root_dir path/to/how2sign_holistic_features \\
+      --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15 \\
+      --max_frames 300 --epochs 150 --decode beam --beam_width 10
 
   # Custom experiment name
   python train.py --exp_name my_ablation --epochs 100
@@ -34,6 +47,7 @@ import random
 import shutil
 
 from dataset import PhoenixSignDataset
+from dataset_how2sign import How2SignDataset
 from models import SignLanguageTransformer
 from utils import GlossTokenizer, Trainer, collate_fn, ctc_greedy_decode, ctc_beam_decode
 
@@ -45,6 +59,8 @@ def get_experiment_name(args):
     if args.exp_name:
         return args.exp_name
     
+    dataset_tag = args.dataset  # 'phoenix' or 'how2sign'
+    
     if not args.use_bart:
         mode = "sign2gloss"
     elif args.ctc_weight == 0:
@@ -53,7 +69,7 @@ def get_experiment_name(args):
         mode = f"sign2gloss2text_ctc{args.ctc_weight}"
     
     parts = [
-        "phoenix",
+        dataset_tag,
         mode,
         f"e{args.epochs}",
         f"d{args.dim}",
@@ -255,6 +271,7 @@ def save_experiment(args, exp_name, results_dir, models_dir,
         'model_state_dict': model.state_dict(),
         'tokenizer_vocab': tokenizer.gloss_to_idx,
         'config': {
+            'dataset': args.dataset,
             'input_dim': args.input_dim_detected,
             'dim': args.dim,
             'num_classes': tokenizer.vocab_size,
@@ -290,10 +307,14 @@ def main():
     parser = argparse.ArgumentParser(description="Train Sign Language Transformer")
     
     # Data
-    parser.add_argument('--root_dir', type=str, 
-                        default='../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/')
+    parser.add_argument('--dataset', type=str, default='phoenix',
+                        choices=['phoenix', 'how2sign'],
+                        help='Dataset to use: phoenix or how2sign')
+    parser.add_argument('--root_dir', type=str, default=None,
+                        help='Dataset root (auto-set per dataset if not provided)')
     parser.add_argument('--batch_size', type=int, default=20)
-    parser.add_argument('--max_frames', type=int, default=250)
+    parser.add_argument('--max_frames', type=int, default=None,
+                        help='Max frames (default: 250 for phoenix, 300 for how2sign)')
     parser.add_argument('--num_workers', type=int, default=4)
     
     # Training
@@ -327,12 +348,23 @@ def main():
     np.random.seed(args.seed)
     random.seed(args.seed)
     
+    # ─── Dataset defaults ───
+    if args.root_dir is None:
+        if args.dataset == 'phoenix':
+            args.root_dir = '../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/'
+        else:
+            args.root_dir = '../how2sign_holistic_features/'
+    
+    if args.max_frames is None:
+        args.max_frames = 250 if args.dataset == 'phoenix' else 300
+    
     # ─── Experiment Setup ───
     exp_name = get_experiment_name(args)
     results_dir, models_dir = setup_directories(exp_name)
     
     print(f"\n{'='*60}")
     print(f"🧪 Experiment: {exp_name}")
+    print(f"   Dataset: {args.dataset}")
     print(f"   Results → {results_dir}")
     print(f"   Models  → {models_dir}")
     print(f"   Config:  epochs={args.epochs}, decode={args.decode}, "
@@ -341,12 +373,6 @@ def main():
     
     # ─── Tokenizers ───
     print("\nBuilding tokenizers...")
-    all_gloss = []
-    for split in ['train', 'dev', 'test']:
-        csv = Path(args.root_dir) / 'annotations' / 'manual' / f'PHOENIX-2014-T.{split}.corpus.csv'
-        df = pd.read_csv(csv, sep='|')
-        all_gloss.extend(df['orth'].dropna().tolist())
-    tokenizer = GlossTokenizer(all_gloss, min_freq=1)
     
     bart_tokenizer = None
     if args.use_bart:
@@ -354,20 +380,41 @@ def main():
         bart_tokenizer = BartTokenizer.from_pretrained(args.bart_model)
         print(f"  BART tokenizer: {args.bart_model}")
     
+    if args.dataset == 'phoenix':
+        # Build gloss tokenizer from PHOENIX annotations
+        all_gloss = []
+        for split in ['train', 'dev', 'test']:
+            csv = Path(args.root_dir) / 'annotations' / 'manual' / f'PHOENIX-2014-T.{split}.corpus.csv'
+            df = pd.read_csv(csv, sep='|')
+            all_gloss.extend(df['orth'].dropna().tolist())
+        tokenizer = GlossTokenizer(all_gloss, min_freq=1)
+    else:
+        # How2Sign has no glosses — build a minimal dummy tokenizer
+        tokenizer = GlossTokenizer(["DUMMY"], min_freq=1)
+    
     # ─── Datasets ───
-    print("Loading datasets...")
-    train_ds = PhoenixSignDataset(args.root_dir, 'train', args.max_frames, True,
-                                   tokenizer, bart_tokenizer)
-    val_ds = PhoenixSignDataset(args.root_dir, 'dev', args.max_frames, False,
-                                 tokenizer, bart_tokenizer)
-    test_ds = PhoenixSignDataset(args.root_dir, 'test', args.max_frames, False,
+    print(f"Loading {args.dataset} datasets...")
+    
+    if args.dataset == 'phoenix':
+        train_ds = PhoenixSignDataset(args.root_dir, 'train', args.max_frames, True,
+                                       tokenizer, bart_tokenizer)
+        val_ds = PhoenixSignDataset(args.root_dir, 'dev', args.max_frames, False,
+                                     tokenizer, bart_tokenizer)
+        test_ds = PhoenixSignDataset(args.root_dir, 'test', args.max_frames, False,
+                                      tokenizer, bart_tokenizer)
+    else:
+        train_ds = How2SignDataset(args.root_dir, 'train', args.max_frames, True,
+                                    tokenizer, bart_tokenizer)
+        val_ds = How2SignDataset(args.root_dir, 'val', args.max_frames, False,
                                   tokenizer, bart_tokenizer)
+        test_ds = How2SignDataset(args.root_dir, 'test', args.max_frames, False,
+                                   tokenizer, bart_tokenizer)
     
     sample = train_ds[0]
     input_dim = sample['keypoints'].shape[-1]
     args.input_dim_detected = input_dim
     print(f"  input_dim={input_dim}, vocab={tokenizer.vocab_size}, "
-          f"train={len(train_ds)}, dev={len(val_ds)}, test={len(test_ds)}")
+          f"train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}")
     
     train_loader = DataLoader(train_ds, args.batch_size, shuffle=True,
                                collate_fn=collate_fn, num_workers=args.num_workers,
