@@ -6,8 +6,8 @@
 
 ### Job Configuration #########################################################
 
-#SBATCH --job-name=slt-stage1-train
-#SBATCH --output=slt-stage1-train-%j.out
+#SBATCH --job-name=mediapipe-asl-train
+#SBATCH --output=mediapipe-asl-train-%j.out
 
 #SBATCH --get-user-env
 
