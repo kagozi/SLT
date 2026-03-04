@@ -49,8 +49,8 @@ mamba activate slt-multistream
 # python train.py --epochs 150 --decode beam --beam_width 10
 
 # Exp 2: Sign2Gloss2Text (joint CTC + BART, 3-stage training)
-python train.py --epochs 150 --decode beam --beam_width 10 \
-    --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15
+# python train.py --epochs 150 --decode beam --beam_width 10 \
+#     --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15
 
 # Exp 3: Glossless Sign2Text (BART-only, no CTC)
 # python train.py --epochs 150 --decode beam --beam_width 10 \
