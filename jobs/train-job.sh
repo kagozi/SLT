@@ -6,8 +6,8 @@
 
 ### Job Configuration #########################################################
 
-#SBATCH --job-name=slt-stage1-train
-#SBATCH --output=slt-stage1-train-%j.out
+#SBATCH --job-name=mediapipe-asl-train
+#SBATCH --output=mediapipe-asl-train-%j.out
 
 #SBATCH --get-user-env
 
@@ -57,6 +57,11 @@ python train.py --epochs 150 --decode beam --beam_width 10 \
 #     --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
 
 
+## American Sign Language (ASL)
+python train.py --dataset how2sign \\
+       ../HowToSign/how2sign_holistic_features \\
+      --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0 \\
+      --max_frames 300 --epochs 150 --decode beam --beam_width 10
 
 echo "=========================================="
 echo "Job finished at $(date)"
