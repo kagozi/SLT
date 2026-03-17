@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-how2sign
+  namespace: gai-lina-group
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: downloader
+        image: ubuntu:22.04
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+
+            # Redirect temp entirely to PVC - no ephemeral storage used
+            mkdir -p /data/tmp /data/how2sign
+            export TMPDIR=/data/tmp
+
+            apt-get update -qq && apt-get install -y -qq curl unzip
+
+            echo "=== Downloading How2Sign (holistic) via Kaggle API ==="
+            curl -L \
+              --user "${KAGGLE_USERNAME}:${KAGGLE_KEY}" \
+              "https://www.kaggle.com/api/v1/datasets/download/psewmuthu/how2sign-holistic" \
+              -o /data/how2sign/how2sign-holistic.zip
+
+            echo "=== Download complete. Extracting ==="
+            unzip -q /data/how2sign/how2sign-holistic.zip -d /data/how2sign
+            rm -f /data/how2sign/how2sign-holistic.zip
+
+            echo "=== Done. Contents: ==="
+            ls -lh /data/how2sign
+        env:
+        - name: KAGGLE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: kaggle-credentials
+              key: username
+        - name: KAGGLE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: kaggle-credentials
+              key: api-key
+        resources:
+          requests:
+            cpu: "1"
+            memory: "1Gi"
+          limits:
+            cpu: "2"
+            memory: "2Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

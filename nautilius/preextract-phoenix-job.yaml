@@ -1,0 +1,48 @@
+# Kubernetes Job: pre-extract MediaPipe keypoints for the Phoenix-2014-T dataset.
+#
+# Prerequisites:
+#   1. Build and push the Docker image:
+#        docker build -t harbor.nrp-nautilus.io/<YOUR_NAMESPACE>/slt:latest .
+#        docker push harbor.nrp-nautilus.io/<YOUR_NAMESPACE>/slt:latest
+#   2. Replace <YOUR_NAMESPACE> below with your NRP namespace.
+#   3. The PVC must already contain the extracted dataset at:
+#        /data/phoenix2014/PHOENIX-2014-T-release-v3/
+#
+# Run AFTER extract-phoenix.yaml has completed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: preextract-phoenix-keypoints
+  namespace: gai-lina-group
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: extractor
+        image: harbor.nrp-nautilus.io/<YOUR_NAMESPACE>/slt:latest
+        command: ["python", "preextract_keypoints.py"]
+        args:
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3"
+          - "--max_frames"
+          - "250"
+          - "--splits"
+          - "train"
+          - "dev"
+          - "test"
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+          limits:
+            cpu: "8"
+            memory: "32Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
