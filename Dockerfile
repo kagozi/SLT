@@ -24,10 +24,10 @@ RUN pip install --upgrade pip && \
       mediapipe==0.10.14 \
       ultralytics \
       einops sentencepiece regex scikit-learn \
-      omegaconf hydra-core tensorboard sacrebleu nltk
+      omegaconf hydra-core tensorboard sacrebleu nltk \
+      wandb kaggle
 
 # Copy code
-COPY preprocessing preprocessing
-COPY scripts scripts
+COPY *.py .
 
 ENV PYTHONPATH=/workspace

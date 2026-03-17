@@ -3,6 +3,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: extract-phoenix
+  namespace: gai-lina-group
 spec:
   restartPolicy: Never
   containers:
