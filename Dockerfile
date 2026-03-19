@@ -25,7 +25,9 @@ RUN pip install --upgrade pip && \
       ultralytics \
       einops sentencepiece regex scikit-learn \
       omegaconf hydra-core tensorboard sacrebleu nltk \
-      wandb kaggle
+      wandb kaggle \
+      spacy && \
+    python -m spacy download en_core_web_sm
 
 # Copy code
 COPY *.py .

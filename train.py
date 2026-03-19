@@ -45,6 +45,7 @@ import torch
 from torch.utils.data import DataLoader
 import random
 import shutil
+import wandb
 
 from dataset import PhoenixSignDataset
 from dataset_how2sign import How2SignDataset
@@ -81,10 +82,11 @@ def get_experiment_name(args):
     return "_".join(parts)
 
 
-def setup_directories(exp_name):
+def setup_directories(exp_name, output_dir=None):
     """Create result and model directories."""
-    results_dir = Path("../results") / exp_name
-    models_dir = Path("../models") / exp_name
+    base = Path(output_dir) if output_dir else Path("..")
+    results_dir = base / "results" / exp_name
+    models_dir = base / "models" / exp_name
     results_dir.mkdir(parents=True, exist_ok=True)
     models_dir.mkdir(parents=True, exist_ok=True)
     return results_dir, models_dir
@@ -339,6 +341,8 @@ def main():
     # Experiment management
     parser.add_argument('--exp_name', type=str, default=None,
                         help='Custom experiment name (auto-generated if not set)')
+    parser.add_argument('--output_dir', type=str, default=None,
+                        help='Base dir for results/ and models/ (default: ..)')
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--eval_only', action='store_true')
     
@@ -360,8 +364,15 @@ def main():
     
     # ─── Experiment Setup ───
     exp_name = get_experiment_name(args)
-    results_dir, models_dir = setup_directories(exp_name)
-    
+    results_dir, models_dir = setup_directories(exp_name, args.output_dir)
+
+    wandb.init(
+        project="slt",
+        name=exp_name,
+        config=vars(args),
+        dir=str(results_dir),
+    )
+
     print(f"\n{'='*60}")
     print(f"🧪 Experiment: {exp_name}")
     print(f"   Dataset: {args.dataset}")
@@ -389,8 +400,19 @@ def main():
             all_gloss.extend(df['orth'].dropna().tolist())
         tokenizer = GlossTokenizer(all_gloss, min_freq=1)
     else:
-        # How2Sign has no glosses — build a minimal dummy tokenizer
-        tokenizer = GlossTokenizer(["DUMMY"], min_freq=1)
+        # How2Sign: use pseudoglosses if the PSEUDOGLOSS column exists in the CSV
+        pseudo_csv = Path(args.root_dir) / 'metadata' / 'how2sign_realigned_train.csv'
+        pseudo_glosses = []
+        if pseudo_csv.exists():
+            df_h2s = pd.read_csv(pseudo_csv, sep='\t')
+            if 'PSEUDOGLOSS' in df_h2s.columns:
+                pseudo_glosses = df_h2s['PSEUDOGLOSS'].dropna().tolist()
+        if pseudo_glosses:
+            tokenizer = GlossTokenizer(pseudo_glosses, min_freq=2)
+            print(f"  How2Sign pseudogloss tokenizer: {tokenizer.vocab_size} tokens")
+        else:
+            print("  How2Sign: no PSEUDOGLOSS column found — using dummy tokenizer")
+            tokenizer = GlossTokenizer(["DUMMY"], min_freq=1)
     
     # ─── Datasets ───
     print(f"Loading {args.dataset} datasets...")
@@ -457,6 +479,7 @@ def main():
             use_bart=args.use_bart,
             ctc_weight=args.ctc_weight,
             freeze_bart_epochs=args.freeze_bart_epochs,
+            models_dir=models_dir,
         )
         print(f"\n🏋️ Training for {args.epochs} epochs...")
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,
@@ -475,6 +498,27 @@ def main():
     # ─── Save Everything ───
     save_experiment(args, exp_name, results_dir, models_dir,
                     metrics, eval_data, model, tokenizer)
+
+    # ─── Log final metrics + prediction samples to W&B ───
+    wandb.log({f"test/{k}": v for k, v in metrics.items()})
+
+    sample_rows = []
+    for i in range(min(50, len(eval_data['names']))):
+        row = [
+            eval_data['names'][i],
+            eval_data['targets'][i],
+            eval_data['preds'][i],
+        ]
+        if eval_data['trans_preds'] and i < len(eval_data['trans_preds']):
+            row += [eval_data['trans_targets'][i], eval_data['trans_preds'][i]]
+        sample_rows.append(row)
+
+    cols = ['name', 'target_gloss', 'pred_gloss']
+    if eval_data['trans_preds']:
+        cols += ['target_translation', 'pred_translation']
+    wandb.log({"test/predictions": wandb.Table(columns=cols, data=sample_rows)})
+
+    wandb.finish()
     
     # ─── Show Samples ───
     print(f"\n🔍 Sample predictions:")

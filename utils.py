@@ -364,10 +364,12 @@ import json
 import math
 from typing import List, Dict
 from collections import Counter
+from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import wandb
 
 
 class CTCLoss(nn.Module):
@@ -511,7 +513,7 @@ class Trainer:
     
     def __init__(self, model, train_loader, val_loader, tokenizer, device='cuda',
                  bart_tokenizer=None, use_bart=False, ctc_weight=0.3,
-                 freeze_bart_epochs=5):
+                 freeze_bart_epochs=5, models_dir=None):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -521,6 +523,8 @@ class Trainer:
         self.use_bart = use_bart
         self.ctc_weight = ctc_weight
         self.freeze_bart_epochs = freeze_bart_epochs
+        self.models_dir = Path(models_dir) if models_dir else Path('.')
+        self.models_dir.mkdir(parents=True, exist_ok=True)
         self.stage = 1
 
         self.criterion = CTCLoss(blank=0)
@@ -782,10 +786,22 @@ class Trainer:
                   f'(CTC={metrics["ctc"]:.4f} Trans={metrics["trans"]:.4f}) '
                   f'Val={val_loss:.4f}')
 
+            # ── W&B per-epoch metrics ──
+            log_dict = {
+                'epoch': epoch,
+                'train/loss': metrics['loss'],
+                'train/ctc_loss': metrics['ctc'],
+                'train/trans_loss': metrics['trans'],
+                'val/loss': val_loss,
+                'train/stage': self.stage,
+            }
+            if wandb.run is not None:
+                wandb.log(log_dict, step=epoch)
+
+            # ── Sample predictions every 5 epochs ──
             if epoch % 5 == 0:
-                for i in range(min(3, len(predictions))):
-                    # Glossless: predictions are already strings
-                    # CTC: predictions are token id lists
+                sample_rows = []
+                for i in range(min(5, len(predictions))):
                     if isinstance(predictions[i], str):
                         pred_text = predictions[i]
                     else:
@@ -794,23 +810,35 @@ class Trainer:
                     print(f'  Target: {target_text}')
                     print(f'  Pred  : {pred_text}')
                     print('  ---')
+                    sample_rows.append([epoch, target_text, pred_text])
+                if wandb.run is not None and sample_rows:
+                    wandb.log({
+                        'val/samples': wandb.Table(
+                            columns=['epoch', 'target', 'prediction'],
+                            data=sample_rows,
+                        )
+                    }, step=epoch)
 
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                best_path = self.models_dir / 'best_model.pt'
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'val_loss': val_loss,
-                }, 'best_model.pt')
-                print(f'  ✅ Best model saved (val_loss={val_loss:.4f})')
+                }, best_path)
+                print(f'  ✅ Best model saved (val_loss={val_loss:.4f}) → {best_path}')
+                if wandb.run is not None:
+                    wandb.log({'val/best_loss': val_loss}, step=epoch)
 
             if epoch % 10 == 0:
+                ckpt_path = self.models_dir / f'checkpoint_epoch_{epoch}.pt'
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
-                }, f'checkpoint_epoch_{epoch}.pt')
+                }, ckpt_path)
 
 
 # ─── Tokenizer ───────────────────────────────────────────────────────

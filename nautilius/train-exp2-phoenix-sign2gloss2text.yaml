@@ -1,0 +1,66 @@
+# Experiment 2: PHOENIX-2014-T — Sign2Gloss2Text (joint CTC + BART)
+# 3-stage training: CTC-only → BART warmup → full joint.
+# Requires more memory due to BART-base (~500MB).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp2-phoenix-sign2gloss2text
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp2_phoenix_sign2gloss2text"
+          - "--epochs"
+          - "150"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "16"
+          - "--dim"
+          - "192"
+          - "--num_workers"
+          - "4"
+          - "--use_bart"
+          - "--ctc_weight"
+          - "0.5"
+          - "--freeze_bart_epochs"
+          - "15"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        resources:
+          requests:
+            cpu: "4"
+            memory: "32Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "32Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
