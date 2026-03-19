@@ -10,12 +10,14 @@ End-to-end sign language recognition and translation using body keypoints extrac
 
 - [Architecture](#architecture)
 - [Experiments](#experiments)
+- [Pseudogloss Methods](#pseudogloss-methods)
 - [Datasets](#datasets)
 - [Project Structure](#project-structure)
 - [Setup](#setup)
 - [NRP / Nautilus Cluster](#nrp--nautilus-cluster)
 - [Training](#training)
 - [Evaluation Metrics](#evaluation-metrics)
+- [CI/CD](#cicd)
 
 ---
 
@@ -63,13 +65,43 @@ Transformer Encoder (4 × TransformerBlock)
 
 ## Experiments
 
-| # | Dataset | Mode | Key Flags |
-|---|---|---|---|
-| 1 | PHOENIX-2014-T | Sign2Gloss | *(default)* |
-| 2 | PHOENIX-2014-T | Sign2Gloss2Text | `--use_bart --ctc_weight 0.5 --freeze_bart_epochs 15` |
-| 3 | PHOENIX-2014-T | Glossless Sign2Text | `--use_bart --ctc_weight 0.0` |
-| 4 | How2Sign | Glossless Sign2Text | `--dataset how2sign --use_bart --ctc_weight 0.0` |
-| 5 | How2Sign | Pseudo-gloss | `--dataset how2sign --use_bart --ctc_weight 0.5` |
+| # | Dataset | Mode | Pseudoglosses | Key Flags |
+|---|---|---|---|---|
+| 1 | PHOENIX-2014-T | Sign2Gloss | Ground-truth glosses | *(default)* |
+| 2 | PHOENIX-2014-T | Sign2Gloss2Text | Ground-truth glosses | `--use_bart --ctc_weight 0.5 --freeze_bart_epochs 15` |
+| 3 | PHOENIX-2014-T | Glossless Sign2Text | None | `--use_bart --ctc_weight 0.0` |
+| 4 | How2Sign | Glossless Sign2Text | None (baseline) | `--dataset how2sign --use_bart --ctc_weight 0.0` |
+| 5 | How2Sign | POS Pseudogloss + BART | Option A: POS-based | `--dataset how2sign --use_bart --ctc_weight 0.5` |
+
+---
+
+## Pseudogloss Methods
+
+How2Sign has no gloss annotations. This project investigates three approaches to automatically generate pseudoglosses as intermediate supervision signals.
+
+### Option A — POS-based Pseudoglosses (implemented)
+
+Extracts content words (NOUN, VERB, ADJ, ADV) from English translations using spaCy lemmatisation and POS filtering. Inspired by [Sign2GPT (ICLR 2024)](https://openreview.net/forum?id=LqaEEs3UxU).
+
+- **Script:** `generate_pseudoglosses_how2sign.py`
+- **Input:** How2Sign English sentences from metadata CSVs
+- **Output:** `PSEUDOGLOSS` column written in-place to `metadata/how2sign_realigned_{split}.csv`
+- **Tokenizer:** Built from pseudogloss vocab at training time (`min_freq=2`)
+- **NRP job:** `nautilius/generate-pseudoglosses-job.yaml`
+
+Example:
+```
+Sentence:    "And I'm going to show you how to make a layered cake."
+Pseudogloss: SHOW MAKE LAYER CAKE
+```
+
+### Option B — LLM-generated Pseudoglosses (planned)
+
+Few-shot prompting an LLM (GPT-4 / Gemma2) with 30 text-gloss pairs from PHOENIX-2014-T to generate sign-order pseudogloss sequences for each How2Sign sentence. Includes a frame-level reordering classifier to match sign order. Inspired by [PGG-SLT (NeurIPS 2025)](https://arxiv.org/abs/2505.15438) — achieves **13.7 BLEU-4** on How2Sign.
+
+### Option C — Clustering-based Pseudoglosses (planned)
+
+K-means clustering (k=256) on per-stream keypoint features (left hand, right hand, face, body) to produce per-frame discrete pseudo-labels without any annotation. Inspired by [SHuBERT (ACL 2025)](https://arxiv.org/abs/2411.16765) — current **SOTA at 16.2 BLEU-4** on How2Sign.
 
 ---
 
@@ -77,18 +109,19 @@ Transformer Encoder (4 × TransformerBlock)
 
 ### PHOENIX-2014-T
 
-German Weather Forecast Sign Language dataset. Contains ~8,000 video sequences with gloss annotations and German text translations.
+German Weather Forecast Sign Language dataset. ~8,000 video sequences with gloss annotations and German text translations.
 
 - **Source:** [RWTH-PHOENIX-Weather 2014-T](https://www-i6.informatik.rwth-aachen.de/~koller/RWTH-PHOENIX-2014-T/)
-- **PVC path (NRP):** `/data/phoenix2014/PHOENIX-2014-T-release-v3/`
+- **PVC path:** `/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/`
 - **Keypoints cached at:** `.../features/keypoints/{train,dev,test}/`
 
 ### How2Sign
 
-Large-scale American Sign Language dataset (~80 hours of instructional video).
+Large-scale American Sign Language dataset (~80 hours of instructional video). No gloss annotations.
 
 - **Source:** [Kaggle — psewmuthu/how2sign-holistic](https://www.kaggle.com/datasets/psewmuthu/how2sign-holistic)
-- **PVC path (NRP):** `/data/how2sign/`
+- **PVC path:** `/data/how2sign/`
+- **Pseudoglosses at:** `/data/how2sign/metadata/how2sign_realigned_{split}.csv` (`PSEUDOGLOSS` column)
 
 ---
 
@@ -96,30 +129,37 @@ Large-scale American Sign Language dataset (~80 hours of instructional video).
 
 ```
 slt/
-├── train.py                   # Main training + evaluation entry point
-├── models.py                  # SignLanguageTransformer, BARTTranslationHead
-├── dataset.py                 # PhoenixSignDataset
-├── dataset_how2sign.py        # How2SignDataset
-├── preprocessing.py           # PhoenixKeypointExtractor (MediaPipe)
-├── preextract_keypoints.py    # Offline keypoint extraction script
-├── evaluate.py                # Standalone evaluation
-├── utils.py                   # GlossTokenizer, Trainer, collate_fn, CTC decoding
-├── Dockerfile                 # Image: ghcr.io/kagozi/slt:latest
-├── environment.yaml           # Conda environment spec
-├── requirements.txt
+├── train.py                          # Main training + evaluation entry point
+├── models.py                         # SignLanguageTransformer, BARTTranslationHead
+├── dataset.py                        # PhoenixSignDataset
+├── dataset_how2sign.py               # How2SignDataset (loads PSEUDOGLOSS column)
+├── preprocessing.py                  # PhoenixKeypointExtractor (MediaPipe)
+├── preextract_keypoints.py           # Offline Phoenix keypoint extraction
+├── generate_pseudoglosses_how2sign.py# Option A: POS-based pseudogloss generation
+├── evaluate.py                       # Standalone evaluation
+├── utils.py                          # GlossTokenizer, Trainer, collate_fn, CTC decoding
+├── Dockerfile                        # Image: ghcr.io/kagozi/slt:latest
+├── environment.yaml                  # Conda environment spec
 │
 ├── .github/
 │   └── workflows/
-│       └── docker.yaml        # CI/CD: build + push on push to main/feature/*
+│       └── docker.yaml               # CI/CD: build + push on push to main
 │
-└── nautilius/                 # NRP / Kubernetes manifests
-    ├── slt-data-pvc.yaml          # 500Gi CephFS PVC
-    ├── data-uploader.yaml         # Pod for manual data uploads
-    ├── pvc-inspector.yaml         # Pod for browsing PVC contents
-    ├── extract-phoenix.yaml       # Extracts phoenix-2014-T.v3.tar.gz on PVC
-    ├── create-kaggle-secret.sh    # Creates K8s secret from .env
-    ├── download-how2sign-job.yaml # Job: download How2Sign from Kaggle → PVC
-    └── preextract-phoenix-job.yaml# Job: run MediaPipe keypoint extraction
+└── nautilius/                        # NRP / Kubernetes manifests
+    ├── slt-data-pvc.yaml                 # 500Gi ReadWriteMany CephFS PVC
+    ├── data-uploader.yaml                # Pod for manual data uploads via kubectl cp
+    ├── pvc-inspector.yaml                # Pod for browsing PVC contents
+    ├── extract-phoenix.yaml              # Extracts phoenix-2014-T.v3.tar.gz on PVC
+    ├── create-kaggle-secret.sh           # Creates Kaggle K8s secret from .env
+    ├── create-wandb-secret.sh            # Creates W&B K8s secret from .env
+    ├── download-how2sign-job.yaml        # Job: download How2Sign → /data/how2sign/
+    ├── preextract-phoenix-job.yaml       # Job: MediaPipe keypoint extraction
+    ├── generate-pseudoglosses-job.yaml   # Job: Option A POS pseudogloss generation
+    ├── train-exp1-phoenix-sign2gloss.yaml
+    ├── train-exp2-phoenix-sign2gloss2text.yaml
+    ├── train-exp3-phoenix-glossless.yaml
+    ├── train-exp4-how2sign-glossless.yaml
+    └── train-exp5-how2sign-pseudogloss.yaml
 ```
 
 ---
@@ -129,23 +169,25 @@ slt/
 ### Local
 
 ```bash
-# Clone
 git clone https://github.com/kagozi/slt.git
 cd slt
 
-# Create environment
 conda env create -f environment.yaml
 conda activate slt-multistream
 
-# Extract keypoints for PHOENIX (run once before training)
+# Extract Phoenix keypoints once before training
 python preextract_keypoints.py \
   --root_dir /path/to/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \
   --max_frames 250
+
+# Generate How2Sign pseudoglosses once before training
+python generate_pseudoglosses_how2sign.py \
+  --root_dir /path/to/how2sign
 ```
 
 ### Environment variables
 
-Copy `.env.example` to `.env` and fill in your keys:
+Create a `.env` file (never committed):
 
 ```
 WANDB_API_KEY=...
@@ -157,47 +199,91 @@ KAGGE_API_KEY=...
 
 ## NRP / Nautilus Cluster
 
-All jobs target namespace `gai-lina-group`. Run steps in order.
+All jobs target namespace `gai-lina-group`. The PVC uses `rook-cephfs` (ReadWriteMany) so multiple jobs can mount it simultaneously.
 
-### 1. Create the PVC
+### First-time setup
 
 ```bash
+# 1. Create PVC (ReadWriteMany, 500Gi)
 kubectl apply -f nautilius/slt-data-pvc.yaml
-```
 
-> Already done if the Phoenix data is present on the cluster.
-
-### 2. Register Kaggle credentials
-
-```bash
-chmod +x nautilius/create-kaggle-secret.sh
+# 2. Register secrets
+chmod +x nautilius/create-kaggle-secret.sh nautilius/create-wandb-secret.sh
 ./nautilius/create-kaggle-secret.sh
+./nautilius/create-wandb-secret.sh
+
+# 3. Upload Phoenix tarball
+kubectl apply -f nautilius/data-uploader.yaml
+kubectl wait --for=condition=Ready pod/data-uploader -n gai-lina-group --timeout=60s
+kubectl cp /path/to/phoenix-2014-T.v3.tar.gz \
+  gai-lina-group/data-uploader:/data/phoenix-2014-T.v3.tar.gz
 ```
 
-### 3. Download How2Sign (~70 GB)
+### Data pipeline (run in parallel — RWX PVC supports it)
 
 ```bash
+kubectl apply -f nautilius/extract-phoenix.yaml
 kubectl apply -f nautilius/download-how2sign-job.yaml
-kubectl logs -f job/download-how2sign -n gai-lina-group
-# Saves to /data/how2sign/
 ```
 
-### 4. Extract Phoenix keypoints
-
-The Docker image is built and pushed to `ghcr.io/kagozi/slt:latest` automatically by CI on every push to `main`.
+### Preprocessing (run in parallel after data jobs complete)
 
 ```bash
 kubectl apply -f nautilius/preextract-phoenix-job.yaml
-kubectl logs -f job/preextract-phoenix-keypoints -n gai-lina-group
-# Writes .npy files to /data/phoenix2014/.../features/keypoints/{train,dev,test}/
+kubectl apply -f nautilius/generate-pseudoglosses-job.yaml
 ```
 
-### Inspect PVC contents at any time
+### Launch all 5 experiments simultaneously
+
+```bash
+kubectl apply -f nautilius/train-exp1-phoenix-sign2gloss.yaml
+kubectl apply -f nautilius/train-exp2-phoenix-sign2gloss2text.yaml
+kubectl apply -f nautilius/train-exp3-phoenix-glossless.yaml
+kubectl apply -f nautilius/train-exp4-how2sign-glossless.yaml
+kubectl apply -f nautilius/train-exp5-how2sign-pseudogloss.yaml
+```
+
+### Monitor
+
+```bash
+kubectl get pods -n gai-lina-group
+kubectl logs -f job/<job-name> -n gai-lina-group
+```
+
+### Inspect PVC contents
 
 ```bash
 kubectl apply -f nautilius/pvc-inspector.yaml
 kubectl exec -it pvc-inspector -n gai-lina-group -- ls /data
 kubectl delete pod pvc-inspector -n gai-lina-group
+```
+
+### PVC layout after full pipeline
+
+```
+/data/
+├── phoenix-2014-T.v3.tar.gz
+├── phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/
+│   ├── annotations/manual/          # corpus CSVs
+│   └── features/
+│       ├── fullFrame-210x260px/     # original frames
+│       └── keypoints/{train,dev,test}/  # cached .npy (preextract job)
+├── how2sign/
+│   ├── metadata/how2sign_realigned_{train,val,test}.csv  # includes PSEUDOGLOSS col
+│   └── {train,val,test}/frontal/*.npy
+└── experiments/
+    ├── models/
+    │   ├── exp1_phoenix_sign2gloss/
+    │   │   ├── best_model.pt
+    │   │   ├── checkpoint_epoch_*.pt
+    │   │   └── final_*.pt
+    │   └── ...
+    └── results/
+        ├── exp1_phoenix_sign2gloss/
+        │   ├── metrics_*.json
+        │   ├── predictions_*.csv
+        │   └── args_*.json
+        └── ...
 ```
 
 ---
@@ -222,13 +308,16 @@ python train.py --epochs 150 --decode beam --beam_width 10 \
 ### How2Sign
 
 ```bash
-# Exp 4: Glossless Sign2Text
+# Generate pseudoglosses first (one-time)
+python generate_pseudoglosses_how2sign.py --root_dir /data/how2sign
+
+# Exp 4: Glossless baseline (BART only, no pseudoglosses)
 python train.py --dataset how2sign \
     --root_dir /data/how2sign \
     --use_bart --ctc_weight 0.0 \
     --max_frames 300 --epochs 150 --decode beam --beam_width 10
 
-# Exp 5: Pseudo-gloss
+# Exp 5: POS pseudogloss + BART (Option A)
 python train.py --dataset how2sign \
     --root_dir /data/how2sign \
     --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15 \
@@ -240,6 +329,8 @@ python train.py --dataset how2sign \
 | Argument | Default | Description |
 |---|---|---|
 | `--dataset` | `phoenix` | `phoenix` or `how2sign` |
+| `--root_dir` | auto | Dataset root path |
+| `--output_dir` | `..` | Base dir for `results/` and `models/` |
 | `--epochs` | 100 | Training epochs |
 | `--dim` | 192 | Model hidden dimension |
 | `--batch_size` | 20 | Batch size |
@@ -251,8 +342,6 @@ python train.py --dataset how2sign \
 | `--exp_name` | auto | Custom experiment name |
 | `--resume` | — | Path to checkpoint to resume from |
 
-Results and checkpoints are saved to `../results/<exp_name>/` and `../models/<exp_name>/`.
-
 ---
 
 ## Evaluation Metrics
@@ -261,7 +350,19 @@ Results and checkpoints are saved to `../results/<exp_name>/` and `../models/<ex
 |---|---|
 | **WER** | Word Error Rate on gloss sequences (lower is better) |
 | **BLEU-1/4** | n-gram precision on gloss predictions |
-| **Trans BLEU-1/4** | Translation quality (German text, BART mode only) |
+| **Trans BLEU-1/4** | Translation quality (BART mode only) |
 | **Exact Match** | Fraction of perfectly predicted gloss sequences |
 
+All metrics are logged to [Weights & Biases](https://wandb.ai) (`project: slt`) per epoch. Final predictions are logged as W&B Tables with target/prediction pairs.
+
 ---
+
+## CI/CD
+
+Push to `main` triggers `.github/workflows/docker.yaml`:
+
+1. Builds the Docker image
+2. Pushes `ghcr.io/kagozi/slt:latest` + `sha-<commit>` tag
+3. All NRP jobs pull from `ghcr.io/kagozi/slt:latest`
+
+Make the package public in GitHub → Packages → slt → Package settings → Change visibility → Public, so NRP can pull without an image pull secret.

@@ -11,3 +11,5 @@ __pycache__/
 # *.sh
 slurm-*.out
 *.out
+*.zip
+*.gz

@@ -1,0 +1,40 @@
+# Generates POS-based pseudoglosses for How2Sign using spaCy.
+# Writes a PSEUDOGLOSS column directly into the metadata CSVs on the PVC.
+# Must run AFTER download-how2sign-job completes.
+# Must run BEFORE any How2Sign training jobs (exp4, exp5).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-pseudoglosses
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: pseudogloss
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "generate_pseudoglosses_how2sign.py"]
+        args:
+          - "--root_dir"
+          - "/data/how2sign"
+          - "--splits"
+          - "train"
+          - "val"
+          - "test"
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+          limits:
+            cpu: "2"
+            memory: "8Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

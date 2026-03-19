@@ -115,6 +115,7 @@ class How2SignDataset(Dataset):
                 'npy_path': npy_path,
                 'sentence_name': sentence_name,
                 'sentence': str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
+                'pseudogloss': str(row['PSEUDOGLOSS']) if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS']) else "",
             })
 
         if missing > 0:
@@ -152,10 +153,10 @@ class How2SignDataset(Dataset):
             pad = torch.zeros(self.max_frames - T, keypoints.shape[1])
             keypoints = torch.cat([keypoints, pad], dim=0)
 
-        # -- Gloss (dummy -- How2Sign has no gloss annotations) --
-        gloss_text = ""
-        gloss_indices = torch.tensor([1], dtype=torch.long)  # dummy blank token
-        if self.tokenizer:
+        # -- Gloss: use pseudogloss if available, else dummy --
+        gloss_text = sample['pseudogloss']  # "" if not yet generated
+        gloss_indices = torch.tensor([1], dtype=torch.long)  # fallback
+        if self.tokenizer and gloss_text:
             gloss_indices = self.tokenizer.encode(gloss_text)
 
         # -- Translation --
@@ -171,8 +172,8 @@ class How2SignDataset(Dataset):
 
         result = {
             'keypoints': keypoints,          # (max_frames, 225)
-            'gloss': gloss_indices,           # dummy for How2Sign
-            'gloss_text': gloss_text,         # "" always
+            'gloss': gloss_indices,           # pseudogloss tokens (or dummy)
+            'gloss_text': gloss_text,         # pseudogloss string (or "")
             'translation': translation_text,  # English sentence
             'name': sample['sentence_name'],
             'num_frames': num_real_frames,
