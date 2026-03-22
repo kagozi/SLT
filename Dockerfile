@@ -1,27 +1,17 @@
-FROM nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu20.04
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
 # System deps
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN ln -s /usr/bin/python3 /usr/bin/python
-
 # Python deps
-COPY environment.yaml .
-RUN pip install --upgrade pip && \
-    pip install \
-      --extra-index-url https://download.pytorch.org/whl/cu117 \
-      torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117
-
-RUN pip install \
+RUN pip install --no-cache-dir \
       numpy scipy pandas tqdm pyyaml rich click \
       opencv-python pillow matplotlib \
       mediapipe==0.10.14 \
