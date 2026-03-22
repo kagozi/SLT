@@ -18,10 +18,12 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 COPY environment.yaml .
 RUN pip install --upgrade pip && \
     pip install \
+      --extra-index-url https://download.pytorch.org/whl/cu117 \
+      torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117
+
+RUN pip install \
       numpy scipy pandas tqdm pyyaml rich click \
       opencv-python pillow matplotlib \
-      torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117 \
-        --extra-index-url https://download.pytorch.org/whl/cu117 \
       mediapipe==0.10.14 \
       ultralytics \
       einops sentencepiece regex scikit-learn \
