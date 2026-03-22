@@ -1,11 +1,11 @@
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu20.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /workspace
 
 # System deps
 RUN apt-get update && apt-get install -y \
-    python3.10 \
+    python3 \
     python3-pip \
     ffmpeg \
     libgl1 \
@@ -20,12 +20,14 @@ RUN pip install --upgrade pip && \
     pip install \
       numpy scipy pandas tqdm pyyaml rich click \
       opencv-python pillow matplotlib \
-      torch torchvision torchaudio \
+      torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117 \
+        --extra-index-url https://download.pytorch.org/whl/cu117 \
       mediapipe==0.10.14 \
       ultralytics \
       einops sentencepiece regex scikit-learn \
       omegaconf hydra-core tensorboard sacrebleu nltk \
       wandb kaggle \
+      transformers \
       spacy && \
     python -m spacy download en_core_web_sm
 
