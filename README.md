@@ -269,7 +269,7 @@ kubectl delete pod pvc-inspector -n gai-lina-group
 │       ├── fullFrame-210x260px/     # original frames
 │       └── keypoints/{train,dev,test}/  # cached .npy (preextract job)
 ├── how2sign/
-│   ├── metadata/how2sign_realigned_{train,val,test}.csv  # includes PSEUDOGLOSS col
+│   ├── how2sign_holistic_features/metadata/how2sign_realigned_{train,val,test}.csv  # includes PSEUDOGLOSS col
 │   └── {train,val,test}/frontal/*.npy
 └── experiments/
     ├── models/
