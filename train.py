@@ -357,7 +357,7 @@ def main():
         if args.dataset == 'phoenix':
             args.root_dir = '../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/'
         else:
-            args.root_dir = '../how2sign_holistic_features/'
+            args.root_dir = '/data/how2sign/how2sign_holistic_features'
     
     if args.max_frames is None:
         args.max_frames = 250 if args.dataset == 'phoenix' else 300

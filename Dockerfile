@@ -12,14 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python deps
 RUN pip install --no-cache-dir \
-      numpy scipy pandas tqdm pyyaml rich click \
+      "numpy<2" scipy pandas tqdm pyyaml rich click \
       opencv-python pillow matplotlib \
       mediapipe==0.10.14 \
       ultralytics \
       einops sentencepiece regex scikit-learn \
       omegaconf hydra-core tensorboard sacrebleu nltk \
       wandb kaggle \
-      transformers \
+      "transformers==4.44.2" \
       spacy && \
     python -m spacy download en_core_web_sm
 
