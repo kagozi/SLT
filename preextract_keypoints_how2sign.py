@@ -29,18 +29,14 @@ Usage:
 import argparse
 import numpy as np
 import pandas as pd
-import cv2
 from pathlib import Path
 from tqdm import tqdm
 
 from preprocessing import PhoenixKeypointExtractor
 
 
-# CSV column names as they appear in how2sign annotation files
-COL_VIDEO_NAME    = 'VIDEO_NAME'
+# CSV column names
 COL_SENTENCE_NAME = 'SENTENCE_NAME'
-COL_START         = 'START'
-COL_END           = 'END'
 
 SPLIT_CSV = {
     'train': 'how2sign_train.csv',
@@ -48,54 +44,6 @@ SPLIT_CSV = {
     'test':  'how2sign_test.csv',
 }
 
-
-def extract_segment(extractor: PhoenixKeypointExtractor,
-                    video_path: Path,
-                    start_sec: float,
-                    end_sec: float,
-                    max_frames: int) -> np.ndarray:
-    """
-    Open video_path, seek to start_sec, read frames up to end_sec,
-    and return a (T, 225) keypoint array.
-    """
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        return np.zeros((max_frames, extractor.feature_dim), dtype=np.float32)
-
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-
-    # Seek to start frame
-    start_frame = int(start_sec * fps)
-    end_frame   = int(end_sec   * fps)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-    pose_data, left_hand_data, right_hand_data, face_data = [], [], [], []
-
-    frame_idx = start_frame
-    while cap.isOpened() and frame_idx < end_frame:
-        success, image = cap.read()
-        if not success:
-            break
-
-        image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)
-        image.flags.writeable = False
-        results = extractor.holistic.process(image)
-
-        pose_data.append(extractor._extract_pose(results))
-        left_hand_data.append(extractor._extract_left_hand(results))
-        right_hand_data.append(extractor._extract_right_hand(results))
-        face_data.append(extractor._extract_face(results))
-
-        frame_idx += 1
-
-    cap.release()
-
-    if not pose_data:
-        return np.zeros((max_frames, extractor.feature_dim), dtype=np.float32)
-
-    return extractor._process_keypoints(
-        pose_data, left_hand_data, right_hand_data, face_data, max_frames
-    )
 
 
 def preextract_split(root_dir: Path, split: str, max_frames: int) -> None:
@@ -135,8 +83,8 @@ def preextract_split(root_dir: Path, split: str, max_frames: int) -> None:
             if out_path.exists():
                 continue
 
-            video_name = row[COL_VIDEO_NAME]
-            video_path = video_dir / f"{video_name}.mp4"
+            # mp4 files are pre-trimmed sentence clips named by SENTENCE_NAME
+            video_path = video_dir / f"{sentence_name}.mp4"
 
             if not video_path.exists():
                 tqdm.write(f"  WARNING: video not found: {video_path}")
@@ -145,12 +93,7 @@ def preextract_split(root_dir: Path, split: str, max_frames: int) -> None:
                 errors += 1
                 continue
 
-            start_sec = float(row[COL_START])
-            end_sec   = float(row[COL_END])
-
-            keypoints = extract_segment(
-                extractor, video_path, start_sec, end_sec, max_frames
-            )
+            keypoints = extractor.extract_from_video(str(video_path), max_frames)
             np.save(out_path, keypoints)
 
     finally:
