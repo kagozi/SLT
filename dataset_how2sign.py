@@ -1,126 +1,154 @@
 """
-How2Sign Dataset loader for the PSewmuthu/How2Sign_Holistic dataset.
+How2Sign Dataset loader.
 
-Loads pre-extracted MediaPipe Holistic .npy files (543 landmarks x 3 coords)
-and selects 75 landmarks (33 pose + 21 left hand + 21 right hand) to produce
-(T, 225) feature vectors -- identical to the PHOENIX pipeline.
+Supports two source formats — auto-detected from directory layout:
 
-Usage:
-    ds = How2SignDataset(root_dir='path/to/how2sign_holistic_features',
-                         split='train', max_frames=300, bart_tokenizer=bart_tok)
-    sample = ds[0]
-    # sample['keypoints'] -> (max_frames, 225) tensor
-    # sample['translation'] -> "And I call them decorative elements..."
-    # sample['gloss_text'] -> ""  (no glosses available)
+  FORMAT A — RGB-extracted (new, preferred)
+  ─────────────────────────────────────────
+  root_dir/
+      annotations/how2sign_{split}.csv       (tab-sep, cols: SENTENCE_NAME, SENTENCE, …)
+      keypoints/{split}/{SENTENCE_NAME}.npy  (T, 225) float32
+
+  FORMAT B — Kaggle Holistic (legacy)
+  ─────────────────────────────────────────
+  root_dir/
+      metadata/how2sign_realigned_{split}.csv
+      {split}/frontal/{SENTENCE_NAME}_holistic.npy  (T, 543, 3)
+
+Format A is selected when root_dir/keypoints/ exists; Format B otherwise.
+Both produce identical (max_frames, 225) tensors and are fully compatible
+with the existing collate_fn and Trainer.
 """
 
-import torch
-from torch.utils.data import Dataset
-import pandas as pd
 import random
 from pathlib import Path
+
 import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
 
 
-# --- MediaPipe Holistic landmark indices ---
+# ── Format-B helpers (Kaggle Holistic, 543 landmarks → 75) ──────────────────
 
-# Full Holistic: 543 landmarks
-#   Pose:        0 - 32   (33 landmarks)
-#   Face:       33 - 500  (468 landmarks)
-#   Left hand: 501 - 521  (21 landmarks)
-#   Right hand: 522 - 542 (21 landmarks)
-
-POSE_IDX  = list(range(0, 33))      # 33 pose landmarks
-LHAND_IDX = list(range(501, 522))    # 21 left hand landmarks
-RHAND_IDX = list(range(522, 543))    # 21 right hand landmarks
-
-# 75 landmarks total -> 75 x 3 = 225 features (matches PHOENIX)
-SELECT_IDX = np.array(POSE_IDX + LHAND_IDX + RHAND_IDX)  # (75,)
+POSE_IDX  = list(range(0,  33))
+LHAND_IDX = list(range(501, 522))
+RHAND_IDX = list(range(522, 543))
+_SELECT_IDX = np.array(POSE_IDX + LHAND_IDX + RHAND_IDX)   # (75,)
 
 
-def holistic_to_pose_hands(data):
-    """Select 75 landmarks from 543 and flatten to (T, 225).
+def _holistic543_to_225(data: np.ndarray) -> np.ndarray:
+    """(T, 543, 3)  →  (T, 225)"""
+    return data[:, _SELECT_IDX, :].reshape(data.shape[0], -1)
 
-    Args:
-        data: np.ndarray of shape (T, 543, 3)
-    Returns:
-        np.ndarray of shape (T, 225)
-    """
-    selected = data[:, SELECT_IDX, :]  # (T, 75, 3)
-    return selected.reshape(data.shape[0], -1)  # (T, 225)
 
+# ── Dataset ──────────────────────────────────────────────────────────────────
 
 class How2SignDataset(Dataset):
-    """PyTorch Dataset for How2Sign with pre-extracted MediaPipe Holistic keypoints.
+    """
+    PyTorch Dataset for How2Sign.
 
-    Compatible with the same collate_fn and Trainer as PhoenixSignDataset.
-    Since How2Sign has no gloss annotations, gloss fields return dummy values.
+    Args:
+        root_dir:        Root of the How2Sign data tree (see module docstring).
+        split:           'train', 'val', or 'test'.
+        max_frames:      Pad / truncate to this many frames.
+        augment:         Spatial + temporal augmentation (train split only).
+        tokenizer:       GlossTokenizer for pseudo-gloss encoding (optional).
+        bart_tokenizer:  HuggingFace BartTokenizer for translation targets (optional).
     """
 
     COORDS_PER_JOINT = 3
 
     def __init__(self, root_dir, split='train', max_frames=300, augment=True,
                  tokenizer=None, bart_tokenizer=None):
-        """
-        Args:
-            root_dir: Path to how2sign_holistic_features/
-            split: 'train', 'val', or 'test'
-            max_frames: Maximum sequence length (pad/truncate)
-            augment: Enable augmentation (train only)
-            tokenizer: GlossTokenizer (unused for How2Sign, kept for API compat)
-            bart_tokenizer: BartTokenizer for translation targets
-        """
-        self.root_dir = Path(root_dir)
-        self.split = split
-        self.max_frames = max_frames
-        self.augment = augment and (split == 'train')
-        self.tokenizer = tokenizer
+        self.root_dir      = Path(root_dir)
+        self.split         = split
+        self.max_frames    = max_frames
+        self.augment       = augment and (split == 'train')
+        self.tokenizer     = tokenizer
         self.bart_tokenizer = bart_tokenizer
 
-        # -- Load metadata CSV --
-        csv_name = f"how2sign_realigned_{split}.csv"
-        csv_path = self.root_dir / "metadata" / csv_name
+        # ── Auto-detect format ───────────────────────────────────────────────
+        self._use_rgb = (self.root_dir / 'keypoints').exists()
+
+        if self._use_rgb:
+            self._load_rgb_format()
+        else:
+            self._load_holistic_format()
+
+    # ── Format loaders ───────────────────────────────────────────────────────
+
+    def _load_rgb_format(self):
+        """Format A: RGB-extracted keypoints (T, 225)."""
+        csv_path = self.root_dir / 'annotations' / f'how2sign_{self.split}.csv'
         if not csv_path.exists():
-            raise FileNotFoundError(f"Metadata not found: {csv_path}")
+            raise FileNotFoundError(f"Annotations CSV not found: {csv_path}")
 
-        self.df = pd.read_csv(csv_path, sep='\t')
+        df = pd.read_csv(csv_path, sep='\t')
+        kps_dir = self.root_dir / 'keypoints' / self.split
 
-        # -- NPY directory --
-        self.npy_dir = self.root_dir / split / "frontal"
-        if not self.npy_dir.exists():
-            raise FileNotFoundError(f"NPY directory not found: {self.npy_dir}")
-
-        # -- Build filename mapping --
-        # CSV SENTENCE_NAME: "--7E2sU6zP4_10-5-rgb_front"
-        # NPY filename:      "--7E2sU6zP4_10-5-rgb_front_holistic.npy"
-        available_npys = {f.stem: f for f in self.npy_dir.glob("*.npy")}
-
-        # Map CSV rows to npy files
         self.samples = []
         missing = 0
-        for _, row in self.df.iterrows():
-            sentence_name = row['SENTENCE_NAME']
-            # Try with _holistic suffix first, then direct
-            npy_stem = f"{sentence_name}_holistic"
+        for _, row in df.iterrows():
+            sentence_name = str(row['SENTENCE_NAME'])
+            npy_path = kps_dir / f"{sentence_name}.npy"
+            if not npy_path.exists():
+                missing += 1
+                continue
+            self.samples.append({
+                'npy_path':      npy_path,
+                'sentence_name': sentence_name,
+                'sentence':      str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
+                'pseudogloss':   str(row['PSEUDOGLOSS']) if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS']) else "",
+                'format':        'rgb',
+            })
 
-            if npy_stem in available_npys:
-                npy_path = available_npys[npy_stem]
-            elif sentence_name in available_npys:
-                npy_path = available_npys[sentence_name]
+        if missing:
+            print(f"  Warning: How2Sign [{self.split}] (RGB): "
+                  f"{missing}/{len(df)} rows have no matching .npy")
+        print(f"  How2Sign [{self.split}] (RGB-extracted): {len(self.samples)} samples")
+
+    def _load_holistic_format(self):
+        """Format B: Kaggle Holistic keypoints (T, 543, 3)."""
+        csv_path = self.root_dir / 'metadata' / f'how2sign_realigned_{self.split}.csv'
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Metadata CSV not found: {csv_path}")
+
+        df = pd.read_csv(csv_path, sep='\t')
+        npy_dir = self.root_dir / self.split / 'frontal'
+        if not npy_dir.exists():
+            raise FileNotFoundError(f"NPY directory not found: {npy_dir}")
+
+        available = {f.stem: f for f in npy_dir.glob("*.npy")}
+
+        self.samples = []
+        missing = 0
+        for _, row in df.iterrows():
+            sentence_name = str(row['SENTENCE_NAME'])
+            stem_holistic = f"{sentence_name}_holistic"
+
+            if stem_holistic in available:
+                npy_path = available[stem_holistic]
+            elif sentence_name in available:
+                npy_path = available[sentence_name]
             else:
                 missing += 1
                 continue
 
             self.samples.append({
-                'npy_path': npy_path,
+                'npy_path':      npy_path,
                 'sentence_name': sentence_name,
-                'sentence': str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
-                'pseudogloss': str(row['PSEUDOGLOSS']) if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS']) else "",
+                'sentence':      str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
+                'pseudogloss':   str(row['PSEUDOGLOSS']) if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS']) else "",
+                'format':        'holistic',
             })
 
-        if missing > 0:
-            print(f"  Warning: How2Sign [{split}]: {missing}/{len(self.df)} CSV rows have no matching .npy")
-        print(f"  How2Sign [{split}]: {len(self.samples)} samples loaded")
+        if missing:
+            print(f"  Warning: How2Sign [{self.split}] (Holistic): "
+                  f"{missing}/{len(df)} rows have no matching .npy")
+        print(f"  How2Sign [{self.split}] (Kaggle-Holistic): {len(self.samples)} samples")
+
+    # ── PyTorch interface ────────────────────────────────────────────────────
 
     def __len__(self):
         return len(self.samples)
@@ -128,23 +156,25 @@ class How2SignDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
 
-        # -- Load and adapt keypoints --
-        raw = np.load(sample['npy_path'])  # (T, 543, 3)
+        # Load keypoints
+        raw = np.load(sample['npy_path'])
 
-        # Select 75 landmarks -> (T, 225)
-        keypoints = holistic_to_pose_hands(raw)
+        if sample['format'] == 'holistic':
+            # (T, 543, 3) → (T, 225)
+            keypoints = _holistic543_to_225(raw)
+        else:
+            # (T, 225) already
+            keypoints = raw.astype(np.float32)
 
-        # Count real frames (non-zero)
-        frame_norms = np.linalg.norm(keypoints, axis=-1)
-        num_real_frames = max(1, int((frame_norms != 0).sum()))
+        # Count real (non-zero) frames
+        num_real_frames = max(1, int((np.linalg.norm(keypoints, axis=-1) != 0).sum()))
 
         keypoints = torch.FloatTensor(keypoints)
 
-        # -- Augment --
         if self.augment:
             keypoints = self._augment(keypoints)
 
-        # -- Pad / truncate --
+        # Pad / truncate
         T = keypoints.shape[0]
         if T > self.max_frames:
             keypoints = keypoints[:self.max_frames]
@@ -153,16 +183,15 @@ class How2SignDataset(Dataset):
             pad = torch.zeros(self.max_frames - T, keypoints.shape[1])
             keypoints = torch.cat([keypoints, pad], dim=0)
 
-        # -- Gloss: use pseudogloss if available, else dummy --
-        gloss_text = sample['pseudogloss']  # "" if not yet generated
-        gloss_indices = torch.tensor([1], dtype=torch.long)  # fallback
+        # Gloss (pseudo-gloss or dummy)
+        gloss_text    = sample['pseudogloss']
+        gloss_indices = torch.tensor([1], dtype=torch.long)
         if self.tokenizer and gloss_text:
             gloss_indices = self.tokenizer.encode(gloss_text)
 
-        # -- Translation --
+        # Translation
         translation_text = sample['sentence']
-
-        translation_ids = None
+        translation_ids  = None
         if self.bart_tokenizer is not None:
             encoded = self.bart_tokenizer(
                 translation_text, max_length=128, truncation=True,
@@ -171,19 +200,19 @@ class How2SignDataset(Dataset):
             translation_ids = encoded['input_ids'].squeeze(0)
 
         result = {
-            'keypoints': keypoints,          # (max_frames, 225)
-            'gloss': gloss_indices,           # pseudogloss tokens (or dummy)
-            'gloss_text': gloss_text,         # pseudogloss string (or "")
-            'translation': translation_text,  # English sentence
-            'name': sample['sentence_name'],
-            'num_frames': num_real_frames,
+            'keypoints':   keypoints,           # (max_frames, 225)
+            'gloss':       gloss_indices,
+            'gloss_text':  gloss_text,
+            'translation': translation_text,
+            'name':        sample['sentence_name'],
+            'num_frames':  num_real_frames,
         }
         if translation_ids is not None:
             result['translation_ids'] = translation_ids
 
         return result
 
-    # --- Augmentation (same as PHOENIX) ---
+    # ── Augmentation ────────────────────────────────────────────────────────
 
     def _to_3d(self, kps):
         T, D = kps.shape

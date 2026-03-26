@@ -1,0 +1,70 @@
+# Extracts How2Sign RGB clip zips into split subdirectories.
+# Expects the following layout already on the PVC:
+#   /data/how2sign_rgb/train_rgb_front_clips.zip
+#   /data/how2sign_rgb/val_rgb_front_clips.zip
+#   /data/how2sign_rgb/test_rgb_front_clips.zip
+#   /data/how2sign_rgb/annotations/
+#
+# After completion:
+#   /data/how2sign_rgb/train/   <- mp4 files
+#   /data/how2sign_rgb/val/     <- mp4 files
+#   /data/how2sign_rgb/test/    <- mp4 files
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: extract-how2sign-rgb
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: extractor
+        image: ubuntu:22.04
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+
+            apt-get update -qq && apt-get install -y -qq unzip
+
+            BASE=/data/how2sign_rgb
+
+            for SPLIT in train val test; do
+              ZIP="${BASE}/${SPLIT}_rgb_front_clips.zip"
+              OUT="${BASE}/${SPLIT}"
+
+              if [ ! -f "${ZIP}" ]; then
+                echo "WARNING: ${ZIP} not found, skipping."
+                continue
+              fi
+
+              echo "=== Extracting ${SPLIT} ==="
+              mkdir -p "${OUT}"
+              unzip -q -j "${ZIP}" -d "${OUT}"
+              echo "    Done. $(ls ${OUT} | wc -l) files extracted."
+            done
+
+            echo ""
+            echo "=== Final layout ==="
+            ls -lh "${BASE}"
+            for SPLIT in train val test; do
+              echo "  ${SPLIT}: $(ls ${BASE}/${SPLIT} 2>/dev/null | wc -l) files"
+            done
+
+        resources:
+          requests:
+            cpu: "2"
+            memory: "4Gi"
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

@@ -13,3 +13,6 @@ slurm-*.out
 *.out
 *.zip
 *.gz
+data/*
+paper/*
+.DS_Store
