@@ -1,0 +1,46 @@
+# Pre-extracts MediaPipe Holistic keypoints from How2Sign RGB clips.
+# Each CSV sentence row is clipped to its START/END window before extraction.
+#
+# Reads from:  /data/how2sign_rgb/{train,val,test}/*.mp4
+#              /data/how2sign_rgb/annotations/how2sign_{split}.csv
+# Writes to:   /data/how2sign_rgb/keypoints/{train,val,test}/{SENTENCE_NAME}.npy
+#
+# Run AFTER extract-how2sign-rgb job completes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: preextract-how2sign-keypoints
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: extractor
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "preextract_keypoints_how2sign.py"]
+        args:
+          - "--root_dir"
+          - "/data/how2sign_rgb"
+          - "--max_frames"
+          - "300"
+          - "--splits"
+          - "train"
+          - "val"
+          - "test"
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+          limits:
+            cpu: "8"
+            memory: "32Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

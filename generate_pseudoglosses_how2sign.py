@@ -50,7 +50,10 @@ def extract_pseudogloss(doc) -> str:
 
 
 def process_split(root_dir: Path, split: str, nlp) -> None:
-    csv_path = root_dir / 'metadata' / f'how2sign_realigned_{split}.csv'
+    # Support both the new RGB layout (annotations/) and old holistic layout (metadata/)
+    csv_path = root_dir / 'annotations' / f'how2sign_{split}.csv'
+    if not csv_path.exists():
+        csv_path = root_dir / 'metadata' / f'how2sign_realigned_{split}.csv'
     if not csv_path.exists():
         print(f"  [{split}] CSV not found at {csv_path}, skipping.")
         return
