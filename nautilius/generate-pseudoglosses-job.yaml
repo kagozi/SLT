@@ -29,7 +29,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: wandb-credentials
-              key: api_key
+              key: api-key
         resources:
           requests:
             cpu: "2"
