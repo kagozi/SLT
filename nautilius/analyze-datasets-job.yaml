@@ -1,0 +1,48 @@
+# Analyzes PHOENIX-2014-T and How2Sign datasets.
+# Logs sample tables (RGB frame + keypoint vis + sentence + gloss) and
+# per-split statistics (frame counts, vocab sizes, length distributions) to W&B.
+#
+# Run this any time after keypoint extraction is complete.
+# Results appear in W&B project "slt", run "dataset-analysis".
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: analyze-datasets
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: analyze
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "analyze_datasets.py"]
+        args:
+          - "--phoenix_dir"
+          - "/data/phoenix2014t"
+          - "--how2sign_dir"
+          - "/data/how2sign_rgb"
+          - "--n_samples"
+          - "20"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+          limits:
+            cpu: "4"
+            memory: "16Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
