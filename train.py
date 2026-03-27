@@ -18,13 +18,13 @@ PHOENIX-2014-T examples:
 How2Sign examples:
   # Exp 4: How2Sign BART-only (glossless)
   python train.py --dataset how2sign \\
-      --root_dir path/to/how2sign_holistic_features \\
+      --root_dir /data/how2sign_rgb \\
       --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0 \\
       --max_frames 300 --epochs 150 --decode beam --beam_width 10
 
-  # Exp 5: How2Sign with pseudo-glosses (after discovery)
+  # Exp 5: How2Sign with pseudo-glosses (run generate_pseudoglosses_how2sign.py first)
   python train.py --dataset how2sign \\
-      --root_dir path/to/how2sign_holistic_features \\
+      --root_dir /data/how2sign_rgb \\
       --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15 \\
       --max_frames 300 --epochs 150 --decode beam --beam_width 10
 
@@ -400,8 +400,8 @@ def main():
             all_gloss.extend(df['orth'].dropna().tolist())
         tokenizer = GlossTokenizer(all_gloss, min_freq=1)
     else:
-        # How2Sign: use pseudoglosses if the PSEUDOGLOSS column exists in the CSV
-        pseudo_csv = Path(args.root_dir) / 'metadata' / 'how2sign_realigned_train.csv'
+        # How2Sign: build tokenizer from PSEUDOGLOSS column if present.
+        pseudo_csv = Path(args.root_dir) / 'annotations' / 'how2sign_train.csv'
         pseudo_glosses = []
         if pseudo_csv.exists():
             df_h2s = pd.read_csv(pseudo_csv, sep='\t')

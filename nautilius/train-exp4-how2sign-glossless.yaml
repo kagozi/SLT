@@ -1,6 +1,6 @@
 # Experiment 4: How2Sign — Glossless Sign2Text (BART only)
-# ASL dataset, no gloss labels available.
-# Run AFTER download-how2sign job completes.
+# ASL dataset, no gloss labels. Does not require pseudogloss generation.
+# Run AFTER preextract-how2sign-keypoints job completes.
 apiVersion: batch/v1
 kind: Job
 metadata:

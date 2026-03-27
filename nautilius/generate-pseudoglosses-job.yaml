@@ -1,7 +1,7 @@
 # Generates POS-based pseudoglosses for How2Sign using spaCy.
-# Writes a PSEUDOGLOSS column directly into the metadata CSVs on the PVC.
-# Must run AFTER download-how2sign-job completes.
-# Must run BEFORE any How2Sign training jobs (exp4, exp5).
+# Writes a PSEUDOGLOSS column into annotations/how2sign_{split}.csv on the PVC.
+# Must run AFTER preextract-how2sign-keypoints job completes.
+# Must run BEFORE exp5 (How2Sign pseudogloss training). exp4 (glossless) does not need it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -24,6 +24,12 @@ spec:
           - "train"
           - "val"
           - "test"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api_key
         resources:
           requests:
             cpu: "2"

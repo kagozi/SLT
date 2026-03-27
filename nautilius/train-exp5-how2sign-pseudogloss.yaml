@@ -1,5 +1,5 @@
-# Experiment 5: How2Sign — Pseudo-gloss (joint CTC + BART)
-# After gloss discovery. Joint training with ctc_weight=0.5.
+# Experiment 5: How2Sign — POS Pseudo-gloss + BART (joint CTC + BART)
+# Run AFTER generate-pseudoglosses job writes PSEUDOGLOSS column to annotations CSVs.
 apiVersion: batch/v1
 kind: Job
 metadata:

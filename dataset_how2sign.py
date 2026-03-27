@@ -1,23 +1,23 @@
 """
-How2Sign Dataset loader.
+How2Sign Dataset loader — RGB-extracted keypoints.
 
-Supports two source formats — auto-detected from directory layout:
+Expected layout on the PVC:
+    <root_dir>/
+        annotations/
+            how2sign_train.csv   (tab-sep, cols: SENTENCE_NAME, SENTENCE, [PSEUDOGLOSS], …)
+            how2sign_val.csv
+            how2sign_test.csv
+        keypoints/
+            train/{SENTENCE_NAME}.npy   (T, 225) float32 — pre-extracted by MediaPipe
+            val/
+            test/
+        train/                          (pre-trimmed mp4 clips, available for future use)
+            {SENTENCE_NAME}.mp4
+        val/
+        test/
 
-  FORMAT A — RGB-extracted (new, preferred)
-  ─────────────────────────────────────────
-  root_dir/
-      annotations/how2sign_{split}.csv       (tab-sep, cols: SENTENCE_NAME, SENTENCE, …)
-      keypoints/{split}/{SENTENCE_NAME}.npy  (T, 225) float32
-
-  FORMAT B — Kaggle Holistic (legacy)
-  ─────────────────────────────────────────
-  root_dir/
-      metadata/how2sign_realigned_{split}.csv
-      {split}/frontal/{SENTENCE_NAME}_holistic.npy  (T, 543, 3)
-
-Format A is selected when root_dir/keypoints/ exists; Format B otherwise.
-Both produce identical (max_frames, 225) tensors and are fully compatible
-with the existing collate_fn and Trainer.
+Produces (max_frames, 225) tensors identical to the PHOENIX pipeline.
+Compatible with the existing collate_fn and Trainer.
 """
 
 import random
@@ -29,27 +29,12 @@ import torch
 from torch.utils.data import Dataset
 
 
-# ── Format-B helpers (Kaggle Holistic, 543 landmarks → 75) ──────────────────
-
-POSE_IDX  = list(range(0,  33))
-LHAND_IDX = list(range(501, 522))
-RHAND_IDX = list(range(522, 543))
-_SELECT_IDX = np.array(POSE_IDX + LHAND_IDX + RHAND_IDX)   # (75,)
-
-
-def _holistic543_to_225(data: np.ndarray) -> np.ndarray:
-    """(T, 543, 3)  →  (T, 225)"""
-    return data[:, _SELECT_IDX, :].reshape(data.shape[0], -1)
-
-
-# ── Dataset ──────────────────────────────────────────────────────────────────
-
 class How2SignDataset(Dataset):
     """
-    PyTorch Dataset for How2Sign.
+    PyTorch Dataset for How2Sign (RGB-extracted keypoints).
 
     Args:
-        root_dir:        Root of the How2Sign data tree (see module docstring).
+        root_dir:        Root of the how2sign_rgb data tree.
         split:           'train', 'val', or 'test'.
         max_frames:      Pad / truncate to this many frames.
         augment:         Spatial + temporal augmentation (train split only).
@@ -61,94 +46,46 @@ class How2SignDataset(Dataset):
 
     def __init__(self, root_dir, split='train', max_frames=300, augment=True,
                  tokenizer=None, bart_tokenizer=None):
-        self.root_dir      = Path(root_dir)
-        self.split         = split
-        self.max_frames    = max_frames
-        self.augment       = augment and (split == 'train')
-        self.tokenizer     = tokenizer
+        self.root_dir       = Path(root_dir)
+        self.split          = split
+        self.max_frames     = max_frames
+        self.augment        = augment and (split == 'train')
+        self.tokenizer      = tokenizer
         self.bart_tokenizer = bart_tokenizer
 
-        # ── Auto-detect format ───────────────────────────────────────────────
-        self._use_rgb = (self.root_dir / 'keypoints').exists()
-
-        if self._use_rgb:
-            self._load_rgb_format()
-        else:
-            self._load_holistic_format()
-
-    # ── Format loaders ───────────────────────────────────────────────────────
-
-    def _load_rgb_format(self):
-        """Format A: RGB-extracted keypoints (T, 225)."""
-        csv_path = self.root_dir / 'annotations' / f'how2sign_{self.split}.csv'
+        csv_path = self.root_dir / 'annotations' / f'how2sign_{split}.csv'
         if not csv_path.exists():
             raise FileNotFoundError(f"Annotations CSV not found: {csv_path}")
 
         df = pd.read_csv(csv_path, sep='\t')
-        kps_dir = self.root_dir / 'keypoints' / self.split
+
+        kps_dir   = self.root_dir / 'keypoints' / split
+        video_dir = self.root_dir / split
 
         self.samples = []
         missing = 0
         for _, row in df.iterrows():
             sentence_name = str(row['SENTENCE_NAME'])
             npy_path = kps_dir / f"{sentence_name}.npy"
+
             if not npy_path.exists():
                 missing += 1
                 continue
-            self.samples.append({
-                'npy_path':      npy_path,
-                'sentence_name': sentence_name,
-                'sentence':      str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
-                'pseudogloss':   str(row['PSEUDOGLOSS']) if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS']) else "",
-                'format':        'rgb',
-            })
-
-        if missing:
-            print(f"  Warning: How2Sign [{self.split}] (RGB): "
-                  f"{missing}/{len(df)} rows have no matching .npy")
-        print(f"  How2Sign [{self.split}] (RGB-extracted): {len(self.samples)} samples")
-
-    def _load_holistic_format(self):
-        """Format B: Kaggle Holistic keypoints (T, 543, 3)."""
-        csv_path = self.root_dir / 'metadata' / f'how2sign_realigned_{self.split}.csv'
-        if not csv_path.exists():
-            raise FileNotFoundError(f"Metadata CSV not found: {csv_path}")
-
-        df = pd.read_csv(csv_path, sep='\t')
-        npy_dir = self.root_dir / self.split / 'frontal'
-        if not npy_dir.exists():
-            raise FileNotFoundError(f"NPY directory not found: {npy_dir}")
-
-        available = {f.stem: f for f in npy_dir.glob("*.npy")}
-
-        self.samples = []
-        missing = 0
-        for _, row in df.iterrows():
-            sentence_name = str(row['SENTENCE_NAME'])
-            stem_holistic = f"{sentence_name}_holistic"
-
-            if stem_holistic in available:
-                npy_path = available[stem_holistic]
-            elif sentence_name in available:
-                npy_path = available[sentence_name]
-            else:
-                missing += 1
-                continue
 
             self.samples.append({
                 'npy_path':      npy_path,
+                'video_path':    video_dir / f"{sentence_name}.mp4",
                 'sentence_name': sentence_name,
                 'sentence':      str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
-                'pseudogloss':   str(row['PSEUDOGLOSS']) if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS']) else "",
-                'format':        'holistic',
+                'pseudogloss':   str(row['PSEUDOGLOSS'])
+                                 if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS'])
+                                 else "",
             })
 
         if missing:
-            print(f"  Warning: How2Sign [{self.split}] (Holistic): "
+            print(f"  Warning: How2Sign [{split}]: "
                   f"{missing}/{len(df)} rows have no matching .npy")
-        print(f"  How2Sign [{self.split}] (Kaggle-Holistic): {len(self.samples)} samples")
-
-    # ── PyTorch interface ────────────────────────────────────────────────────
+        print(f"  How2Sign [{split}]: {len(self.samples)} samples loaded")
 
     def __len__(self):
         return len(self.samples)
@@ -156,18 +93,11 @@ class How2SignDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
 
-        # Load keypoints
-        raw = np.load(sample['npy_path'])
+        keypoints = np.load(sample['npy_path']).astype(np.float32)   # (T, 225)
 
-        if sample['format'] == 'holistic':
-            # (T, 543, 3) → (T, 225)
-            keypoints = _holistic543_to_225(raw)
-        else:
-            # (T, 225) already
-            keypoints = raw.astype(np.float32)
-
-        # Count real (non-zero) frames
-        num_real_frames = max(1, int((np.linalg.norm(keypoints, axis=-1) != 0).sum()))
+        num_real_frames = max(
+            1, int((np.linalg.norm(keypoints, axis=-1) != 0).sum())
+        )
 
         keypoints = torch.FloatTensor(keypoints)
 
@@ -206,6 +136,7 @@ class How2SignDataset(Dataset):
             'translation': translation_text,
             'name':        sample['sentence_name'],
             'num_frames':  num_real_frames,
+            'video_path':  str(sample['video_path']),
         }
         if translation_ids is not None:
             result['translation_ids'] = translation_ids
