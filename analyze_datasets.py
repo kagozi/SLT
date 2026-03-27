@@ -219,7 +219,6 @@ def analyze_phoenix(root_dir: Path):
 
         print(f"  [{split}] {len(df)} samples")
 
-        kps_dir   = kps_root / split / 'features' / 'fullFrame-210x260px'
         frame_dir = root_dir / 'features' / 'fullFrame-210x260px' / split
 
         # ── Samples ──
