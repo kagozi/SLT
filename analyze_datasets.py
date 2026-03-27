@@ -293,9 +293,10 @@ def analyze_phoenix(root_dir: Path):
             max(frame_counts) if frame_counts else 0,
             zero_files, missing_npy,
         )
+        avg_frames_str = f"{np.mean(frame_counts):.1f}" if frame_counts else "N/A"
         print(f"  [{split}] gloss vocab={len(gloss_vocab)}, "
               f"avg_gloss_len={np.mean(gloss_lens):.1f}, "
-              f"avg_frames={np.mean(frame_counts) if frame_counts else 'N/A':.1f}")
+              f"avg_frames={avg_frames_str}")
 
     return sample_table, stat_table, charts
 
@@ -415,9 +416,10 @@ def analyze_how2sign(root_dir: Path):
             max(frame_counts) if frame_counts else 0,
             zero_files, missing_npy, missing_pg,
         )
+        avg_frames_str = f"{np.mean(frame_counts):.1f}" if frame_counts else "N/A"
         print(f"  [{split}] sent_vocab={len(sent_vocab)}, "
               f"avg_sent_len={np.mean(sent_lens):.1f}, "
-              f"avg_frames={np.mean(frame_counts) if frame_counts else 'N/A':.1f}, "
+              f"avg_frames={avg_frames_str}, "
               f"missing_npy={missing_npy}")
 
     return sample_table, stat_table, charts
