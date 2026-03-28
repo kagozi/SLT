@@ -185,7 +185,7 @@ def analyze_phoenix(root_dir: Path):
         'dev':   root_dir / 'annotations/manual/PHOENIX-2014-T.dev.corpus.csv',
         'test':  root_dir / 'annotations/manual/PHOENIX-2014-T.test.corpus.csv',
     }
-    kps_root = root_dir / 'keypoints'
+    kps_root = root_dir / 'features' / 'keypoints'
 
     sample_table = wandb.Table(columns=[
         'dataset', 'split', 'name',
