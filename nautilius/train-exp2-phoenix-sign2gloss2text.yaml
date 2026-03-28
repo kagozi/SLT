@@ -26,7 +26,7 @@ spec:
           - "--exp_name"
           - "exp2_phoenix_sign2gloss2text"
           - "--epochs"
-          - "150"
+          - "200"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -34,14 +34,14 @@ spec:
           - "--batch_size"
           - "16"
           - "--dim"
-          - "192"
+          - "256"
           - "--num_workers"
           - "4"
           - "--use_bart"
           - "--ctc_weight"
           - "0.5"
           - "--freeze_bart_epochs"
-          - "15"
+          - "20"
         env:
         - name: WANDB_API_KEY
           valueFrom:

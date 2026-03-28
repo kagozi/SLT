@@ -1,4 +1,5 @@
-# Experiment 5: How2Sign — POS Pseudo-gloss + BART (joint CTC + BART)
+# Experiment 5: How2Sign — Sign2Gloss2Text (joint CTC + BART with POS pseudo-glosses)
+# CTC uses pseudo-glosses as weak supervision; BART translates to English text.
 # Run AFTER generate-pseudoglosses job writes PSEUDOGLOSS column to annotations CSVs.
 apiVersion: batch/v1
 kind: Job
@@ -23,9 +24,9 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp5_how2sign_pseudogloss"
+          - "exp5_how2sign_sign2gloss2text"
           - "--epochs"
-          - "150"
+          - "200"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -33,7 +34,7 @@ spec:
           - "--batch_size"
           - "16"
           - "--dim"
-          - "192"
+          - "256"
           - "--max_frames"
           - "300"
           - "--num_workers"
@@ -42,7 +43,7 @@ spec:
           - "--ctc_weight"
           - "0.5"
           - "--freeze_bart_epochs"
-          - "15"
+          - "20"
         env:
         - name: WANDB_API_KEY
           valueFrom:

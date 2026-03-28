@@ -159,7 +159,8 @@ slt/
     ├── train-exp2-phoenix-sign2gloss2text.yaml
     ├── train-exp3-phoenix-glossless.yaml
     ├── train-exp4-how2sign-glossless.yaml
-    └── train-exp5-how2sign-pseudogloss.yaml
+    ├── train-exp5-how2sign-pseudogloss.yaml   # How2Sign Sign2Gloss2Text (CTC+BART)
+    └── train-exp6-how2sign-sign2gloss.yaml    # How2Sign Sign2Gloss (CTC-only)
 ```
 
 ---

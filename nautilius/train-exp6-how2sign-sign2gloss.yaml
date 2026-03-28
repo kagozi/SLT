@@ -1,9 +1,10 @@
-# Experiment 3: PHOENIX-2014-T — Glossless Sign2Text (BART only, ctc_weight=0)
-# No gloss supervision. Encoder feeds directly into BART decoder.
+# Experiment 6: How2Sign — Sign2Gloss (CTC-only, POS pseudo-glosses as labels)
+# No BART. Encoder + CTC head trained to recognise pseudo-gloss sequences.
+# Run AFTER generate-pseudoglosses job writes PSEUDOGLOSS column to annotations CSVs.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp3-phoenix-glossless
+  name: train-exp6-how2sign-sign2gloss
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -17,13 +18,13 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/how2sign_rgb"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp3_phoenix_glossless"
+          - "exp6_how2sign_sign2gloss"
           - "--epochs"
           - "200"
           - "--decode"
@@ -34,13 +35,10 @@ spec:
           - "16"
           - "--dim"
           - "256"
+          - "--max_frames"
+          - "300"
           - "--num_workers"
           - "4"
-          - "--use_bart"
-          - "--ctc_weight"
-          - "0.0"
-          - "--freeze_bart_epochs"
-          - "0"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -50,11 +48,11 @@ spec:
         resources:
           requests:
             cpu: "4"
-            memory: "32Gi"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "4"
-            memory: "32Gi"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data
