@@ -360,16 +360,28 @@
 #     def vocab_size(self):
 #         return len(self.gloss_to_idx)
 
-import json
+import io
 import math
-from typing import List, Dict
 from collections import Counter
 from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import wandb
+
+
+def _fig_to_wandb(fig) -> wandb.Image:
+    """Convert a matplotlib Figure to a wandb.Image and close the figure."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    from PIL import Image as _PILImage
+    return wandb.Image(_PILImage.open(buf).copy())
 
 
 class CTCLoss(nn.Module):
@@ -526,6 +538,15 @@ class Trainer:
         self.models_dir = Path(models_dir) if models_dir else Path('.')
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.stage = 1
+
+        # Per-epoch history for plotting
+        self.history: dict = {
+            'epoch':       [],
+            'train_loss':  [], 'train_ctc':   [], 'train_trans': [],
+            'val_loss':    [], 'val_wer':      [],
+            'val_bleu1':   [], 'val_bleu4':    [],
+            'lr':          [],
+        }
 
         self.criterion = CTCLoss(blank=0)
         
@@ -702,8 +723,53 @@ class Trainer:
         if len(self.optimizer.param_groups) > 1:
             self.optimizer.param_groups[1]['lr'] = 5e-5 * factor
 
+    @staticmethod
+    def _compute_wer_texts(preds: list, targets: list) -> float:
+        """Standard WER (edit distance / reference length)."""
+        def _wer(p, t):
+            pw, tw = p.split(), t.split()
+            if not tw:
+                return 0.0
+            dp = np.zeros((len(tw) + 1, len(pw) + 1))
+            for i in range(len(tw) + 1):
+                dp[i, 0] = i
+            for j in range(len(pw) + 1):
+                dp[0, j] = j
+            for i in range(1, len(tw) + 1):
+                for j in range(1, len(pw) + 1):
+                    cost = 0 if tw[i - 1] == pw[j - 1] else 1
+                    dp[i, j] = min(dp[i-1, j] + 1, dp[i, j-1] + 1, dp[i-1, j-1] + cost)
+            return dp[len(tw), len(pw)] / len(tw)
+        if not preds:
+            return 1.0
+        return float(np.mean([_wer(p, t) for p, t in zip(preds, targets)]))
+
+    @staticmethod
+    def _compute_bleu_texts(preds: list, targets: list) -> dict:
+        """Lightweight per-epoch BLEU-1 through BLEU-4 (corpus n-gram precision)."""
+        scores = {}
+        for n in range(1, 5):
+            prec_sum, count = 0.0, 0
+            for p, t in zip(preds, targets):
+                pt, tt = p.split(), t.split()
+                if len(pt) < n or len(tt) < n:
+                    continue
+                pn = Counter([tuple(pt[i:i+n]) for i in range(len(pt)-n+1)])
+                tn = Counter([tuple(tt[i:i+n]) for i in range(len(tt)-n+1)])
+                matches = sum((pn & tn).values())
+                total   = sum(pn.values())
+                if total > 0:
+                    prec_sum += matches / total
+                    count    += 1
+            scores[f'BLEU-{n}'] = prec_sum / count if count > 0 else 0.0
+        if all(v > 0 for v in scores.values()):
+            scores['BLEU'] = math.exp(sum(math.log(v) for v in scores.values()) / 4)
+        else:
+            scores['BLEU'] = 0.0
+        return scores
+
     @torch.no_grad()
-    def validate(self, epoch, decode_mode='greedy', beam_width=5):
+    def validate(self, decode_mode='greedy', beam_width=5):
         self.model.eval()
         total_loss = 0
         num_batches = 0
@@ -780,20 +846,48 @@ class Trainer:
 
             metrics = self.train_epoch(epoch)
             val_loss, predictions, targets = self.validate(
-                epoch, decode_mode=decode_mode, beam_width=beam_width)
+                decode_mode=decode_mode, beam_width=beam_width)
 
-            print(f'Epoch {epoch}: Train={metrics["loss"]:.4f} '
+            # ── Decode predictions → text for WER / BLEU ──
+            pred_texts = [
+                p if isinstance(p, str) else self.tokenizer.decode(p)
+                for p in predictions
+            ]
+            val_wer  = self._compute_wer_texts(pred_texts, targets) if pred_texts else 1.0
+            val_bleu = self._compute_bleu_texts(pred_texts, targets) if pred_texts else {}
+
+            current_lr = self.optimizer.param_groups[0]['lr']
+
+            # ── Accumulate history ──
+            self.history['epoch'].append(epoch)
+            self.history['train_loss'].append(metrics['loss'])
+            self.history['train_ctc'].append(metrics['ctc'])
+            self.history['train_trans'].append(metrics['trans'])
+            self.history['val_loss'].append(val_loss)
+            self.history['val_wer'].append(val_wer)
+            self.history['val_bleu1'].append(val_bleu.get('BLEU-1', 0))
+            self.history['val_bleu4'].append(val_bleu.get('BLEU-4', 0))
+            self.history['lr'].append(current_lr)
+
+            print(f'Epoch {epoch:3d}: Train={metrics["loss"]:.4f} '
                   f'(CTC={metrics["ctc"]:.4f} Trans={metrics["trans"]:.4f}) '
-                  f'Val={val_loss:.4f}')
+                  f'Val={val_loss:.4f}  WER={val_wer:.3f}  '
+                  f'B1={val_bleu.get("BLEU-1",0):.3f}  B4={val_bleu.get("BLEU-4",0):.3f}  '
+                  f'LR={current_lr:.2e}')
 
             # ── W&B per-epoch metrics ──
             log_dict = {
-                'epoch': epoch,
-                'train/loss': metrics['loss'],
-                'train/ctc_loss': metrics['ctc'],
-                'train/trans_loss': metrics['trans'],
-                'val/loss': val_loss,
-                'train/stage': self.stage,
+                'epoch':              epoch,
+                'train/loss':         metrics['loss'],
+                'train/ctc_loss':     metrics['ctc'],
+                'train/trans_loss':   metrics['trans'],
+                'train/lr':           current_lr,
+                'train/stage':        self.stage,
+                'val/loss':           val_loss,
+                'val/wer':            val_wer,
+                'val/bleu1':          val_bleu.get('BLEU-1', 0),
+                'val/bleu2':          val_bleu.get('BLEU-2', 0),
+                'val/bleu4':          val_bleu.get('BLEU-4', 0),
             }
             if wandb.run is not None:
                 wandb.log(log_dict, step=epoch)
@@ -801,16 +895,12 @@ class Trainer:
             # ── Sample predictions every 5 epochs ──
             if epoch % 5 == 0:
                 sample_rows = []
-                for i in range(min(5, len(predictions))):
-                    if isinstance(predictions[i], str):
-                        pred_text = predictions[i]
-                    else:
-                        pred_text = self.tokenizer.decode(predictions[i])
+                for i in range(min(5, len(pred_texts))):
                     target_text = targets[i] if isinstance(targets[i], str) else str(targets[i])
                     print(f'  Target: {target_text}')
-                    print(f'  Pred  : {pred_text}')
+                    print(f'  Pred  : {pred_texts[i]}')
                     print('  ---')
-                    sample_rows.append([epoch, target_text, pred_text])
+                    sample_rows.append([epoch, target_text, pred_texts[i]])
                 if wandb.run is not None and sample_rows:
                     wandb.log({
                         'val/samples': wandb.Table(
@@ -823,22 +913,110 @@ class Trainer:
                 self.best_val_loss = val_loss
                 best_path = self.models_dir / 'best_model.pt'
                 torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
+                    'epoch':                epoch,
+                    'model_state_dict':     self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
-                    'val_loss': val_loss,
+                    'val_loss':             val_loss,
+                    'val_wer':              val_wer,
+                    'val_bleu4':            val_bleu.get('BLEU-4', 0),
                 }, best_path)
-                print(f'  ✅ Best model saved (val_loss={val_loss:.4f}) → {best_path}')
+                print(f'  ✅ Best model saved (val_loss={val_loss:.4f}  '
+                      f'WER={val_wer:.3f}  BLEU-4={val_bleu.get("BLEU-4",0):.4f}) → {best_path}')
                 if wandb.run is not None:
-                    wandb.log({'val/best_loss': val_loss}, step=epoch)
+                    wandb.log({
+                        'val/best_loss':  val_loss,
+                        'val/best_wer':   val_wer,
+                        'val/best_bleu4': val_bleu.get('BLEU-4', 0),
+                    }, step=epoch)
 
             if epoch % 10 == 0:
                 ckpt_path = self.models_dir / f'checkpoint_epoch_{epoch}.pt'
                 torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
+                    'epoch':                epoch,
+                    'model_state_dict':     self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                 }, ckpt_path)
+
+        # ── Plot training curves at end of training ──
+        self._plot_training_curves()
+
+    def _plot_training_curves(self):
+        """Plot all training metrics as matplotlib figures and log to W&B."""
+        h = self.history
+        if not h['epoch']:
+            return
+        ep = h['epoch']
+
+        def _ax_style(ax, title, xlabel, ylabel):
+            ax.set_title(title, fontsize=12, fontweight='bold')
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(ylabel)
+            ax.grid(alpha=0.3, linestyle='--')
+            ax.spines[['top', 'right']].set_visible(False)
+
+        plots = {}
+
+        # 1. Loss: train + val
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(ep, h['train_loss'], label='Train',  color='royalblue',  linewidth=1.8)
+        ax.plot(ep, h['val_loss'],   label='Val',    color='tomato',     linewidth=1.8)
+        _ax_style(ax, 'Loss Curve', 'Epoch', 'Loss')
+        ax.legend()
+        fig.tight_layout()
+        plots['plots/loss_curve'] = _fig_to_wandb(fig)
+
+        # 2. CTC vs Translation loss (only when BART is active)
+        if any(v > 0 for v in h['train_trans']):
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(ep, h['train_ctc'],   label='CTC Loss',         color='steelblue',   linewidth=1.8)
+            ax.plot(ep, h['train_trans'], label='Translation Loss',  color='darkorange',  linewidth=1.8)
+            _ax_style(ax, 'CTC vs Translation Loss', 'Epoch', 'Loss')
+            ax.legend()
+            fig.tight_layout()
+            plots['plots/ctc_vs_trans_loss'] = _fig_to_wandb(fig)
+
+        # 3. Val WER
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(ep, h['val_wer'], color='crimson', linewidth=1.8)
+        _ax_style(ax, 'Validation WER', 'Epoch', 'WER (lower is better)')
+        fig.tight_layout()
+        plots['plots/val_wer'] = _fig_to_wandb(fig)
+
+        # 4. Val BLEU-1 & BLEU-4
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(ep, h['val_bleu1'], label='BLEU-1', color='mediumseagreen', linewidth=1.8)
+        ax.plot(ep, h['val_bleu4'], label='BLEU-4', color='darkgreen',      linewidth=1.8)
+        _ax_style(ax, 'Validation BLEU', 'Epoch', 'BLEU (higher is better)')
+        ax.legend()
+        fig.tight_layout()
+        plots['plots/val_bleu'] = _fig_to_wandb(fig)
+
+        # 5. Combined: val WER + BLEU-4 (dual-axis)
+        fig, ax1 = plt.subplots(figsize=(9, 4))
+        ax2 = ax1.twinx()
+        ax1.plot(ep, h['val_wer'],   color='crimson',   linewidth=1.8, label='WER')
+        ax2.plot(ep, h['val_bleu4'], color='darkgreen', linewidth=1.8, linestyle='--', label='BLEU-4')
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('WER',    color='crimson')
+        ax2.set_ylabel('BLEU-4', color='darkgreen')
+        ax1.set_title('Val WER & BLEU-4 (dual axis)', fontsize=12, fontweight='bold')
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+        ax1.grid(alpha=0.3, linestyle='--')
+        fig.tight_layout()
+        plots['plots/val_wer_bleu4_combined'] = _fig_to_wandb(fig)
+
+        # 6. Learning rate schedule
+        fig, ax = plt.subplots(figsize=(8, 3))
+        ax.plot(ep, h['lr'], color='mediumpurple', linewidth=1.8)
+        _ax_style(ax, 'Learning Rate Schedule', 'Epoch', 'LR')
+        fig.tight_layout()
+        plots['plots/lr_schedule'] = _fig_to_wandb(fig)
+
+        if wandb.run is not None:
+            wandb.log(plots)
+            print(f"  📈 {len(plots)} training curve plots saved to W&B.")
 
 
 # ─── Tokenizer ───────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ Usage (NRP job):
 
 Usage (local):
     python analyze_datasets.py \
-        --phoenix_dir /data/how2sign_rgb/../phoenix2014t \
+        --phoenix_dir /data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \
         --how2sign_dir /data/how2sign_rgb
 """
 
@@ -185,7 +185,7 @@ def analyze_phoenix(root_dir: Path):
         'dev':   root_dir / 'annotations/manual/PHOENIX-2014-T.dev.corpus.csv',
         'test':  root_dir / 'annotations/manual/PHOENIX-2014-T.test.corpus.csv',
     }
-    kps_root = root_dir / 'keypoints'
+    kps_root = root_dir / 'features' / 'keypoints'
 
     sample_table = wandb.Table(columns=[
         'dataset', 'split', 'name',

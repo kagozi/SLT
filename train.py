@@ -2,36 +2,44 @@
 Train Sign Language Transformer with configurable modes.
 
 All results auto-save to ../results/<exp_name>/ and ../models/<exp_name>/.
+After training, evaluates on both val (dev) and test sets, then runs a beam
+size sweep (widths 1–32) on both splits and logs everything to W&B.
 
-PHOENIX-2014-T examples:
+PHOENIX-2014-T experiments:
   # Exp 1: Sign2Gloss (CTC-only)
-  python train.py --epochs 150 --decode beam --beam_width 10
+  python train.py --exp_name exp1_phoenix_sign2gloss \\
+      --dim 256 --epochs 200 --decode beam --beam_width 10
 
   # Exp 2: Sign2Gloss2Text (joint CTC + BART)
-  python train.py --epochs 150 --decode beam --beam_width 10 \\
-      --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15
+  python train.py --exp_name exp2_phoenix_sign2gloss2text \\
+      --dim 256 --epochs 200 --decode beam --beam_width 10 \\
+      --use_bart --ctc_weight 0.5 --freeze_bart_epochs 20
 
   # Exp 3: Glossless Sign2Text (BART-only)
-  python train.py --epochs 150 --decode beam --beam_width 10 \\
+  python train.py --exp_name exp3_phoenix_glossless \\
+      --dim 256 --epochs 200 --decode beam --beam_width 10 \\
       --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
 
-How2Sign examples:
-  # Exp 4: How2Sign BART-only (glossless)
-  python train.py --dataset how2sign \\
+How2Sign experiments:
+  # Exp 4: How2Sign Glossless (BART-only, no pseudo-glosses)
+  python train.py --dataset how2sign --exp_name exp4_how2sign_glossless \\
       --root_dir /data/how2sign_rgb \\
-      --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0 \\
-      --max_frames 300 --epochs 150 --decode beam --beam_width 10
+      --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10 \\
+      --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
 
-  # Exp 5: How2Sign with pseudo-glosses (run generate_pseudoglosses_how2sign.py first)
-  python train.py --dataset how2sign \\
+  # Exp 5: How2Sign Sign2Gloss2Text (joint CTC + BART with pseudo-glosses)
+  python train.py --dataset how2sign --exp_name exp5_how2sign_sign2gloss2text \\
       --root_dir /data/how2sign_rgb \\
-      --use_bart --ctc_weight 0.5 --freeze_bart_epochs 15 \\
-      --max_frames 300 --epochs 150 --decode beam --beam_width 10
+      --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10 \\
+      --use_bart --ctc_weight 0.5 --freeze_bart_epochs 20
 
-  # Custom experiment name
-  python train.py --exp_name my_ablation --epochs 100
+  # Exp 6: How2Sign Sign2Gloss (CTC-only, pseudo-glosses as labels)
+  python train.py --dataset how2sign --exp_name exp6_how2sign_sign2gloss \\
+      --root_dir /data/how2sign_rgb \\
+      --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10
 """
 
+import io
 import time
 import argparse
 import pandas as pd
@@ -45,7 +53,19 @@ import torch
 from torch.utils.data import DataLoader
 import random
 import shutil
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import wandb
+
+
+def _fig_to_wandb(fig) -> wandb.Image:
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    from PIL import Image as _PILImage
+    return wandb.Image(_PILImage.open(buf).copy())
 
 from dataset import PhoenixSignDataset
 from dataset_how2sign import How2SignDataset
@@ -303,6 +323,132 @@ def save_experiment(args, exp_name, results_dir, models_dir,
         print(f"   ⭐ {models_dir / f'best_{exp_name}.pt'}")
 
 
+# ─── Plotting helpers ────────────────────────────────────────────────
+
+def _ax_style(ax, title, xlabel, ylabel):
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(alpha=0.3, linestyle='--')
+    ax.spines[['top', 'right']].set_visible(False)
+
+
+def _plot_beam_sweep(sweep_rows: list):
+    """Plot WER, BLEU-4, trans_BLEU-4 vs beam width for val + test."""
+    if not sweep_rows:
+        return
+    plots = {}
+    has_trans = any(r['trans_bleu4'] > 0 for r in sweep_rows)
+
+    for metric, ylabel, title, key in [
+        ('WER',     'WER (lower is better)',    'WER vs Beam Width',          'WER'),
+        ('bleu4',   'BLEU-4 (higher is better)','BLEU-4 vs Beam Width',       'bleu4'),
+        ('bleu1',   'BLEU-1 (higher is better)','BLEU-1 vs Beam Width',       'bleu1'),
+    ] + ([('trans_bleu4', 'BLEU-4 (higher is better)',
+           'Translation BLEU-4 vs Beam Width', 'trans_bleu4')] if has_trans else []):
+
+        fig, ax = plt.subplots(figsize=(7, 4))
+        for split, color, marker in [('val', 'steelblue', 'o'), ('test', 'tomato', 's')]:
+            rows = [r for r in sweep_rows if r['split'] == split]
+            if rows:
+                bws = [r['beam_width'] for r in rows]
+                vals = [r[key] for r in rows]
+                ax.plot(bws, vals, marker=marker, color=color,
+                        linewidth=1.8, markersize=6, label=split)
+        _ax_style(ax, title, 'Beam Width', ylabel)
+        ax.set_xticks(BEAM_WIDTHS)
+        ax.legend()
+        fig.tight_layout()
+        plots[f'beam_sweep/{key}_vs_beam'] = _fig_to_wandb(fig)
+
+    if wandb.run is not None:
+        wandb.log(plots)
+
+
+def plot_val_test_comparison(val_metrics: dict, test_metrics: dict):
+    """Bar chart comparing val vs test for WER, BLEU-1, BLEU-4, trans_BLEU-4."""
+    metric_keys = ['WER', 'BLEU-1', 'BLEU-4']
+    if val_metrics.get('trans_BLEU-4', 0) > 0 or test_metrics.get('trans_BLEU-4', 0) > 0:
+        metric_keys.append('trans_BLEU-4')
+
+    labels = metric_keys
+    val_vals  = [val_metrics.get(k, 0) for k in labels]
+    test_vals = [test_metrics.get(k, 0) for k in labels]
+
+    x = np.arange(len(labels))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    bars_v = ax.bar(x - width/2, val_vals,  width, label='Val',  color='steelblue',  alpha=0.85)
+    bars_t = ax.bar(x + width/2, test_vals, width, label='Test', color='tomato',     alpha=0.85)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    _ax_style(ax, 'Val vs Test — Final Metrics', 'Metric', 'Score')
+    ax.legend()
+    # Annotate bars
+    for bar in list(bars_v) + list(bars_t):
+        h = bar.get_height()
+        ax.annotate(f'{h:.3f}',
+                    xy=(bar.get_x() + bar.get_width() / 2, h),
+                    xytext=(0, 3), textcoords='offset points',
+                    ha='center', va='bottom', fontsize=8)
+    fig.tight_layout()
+    if wandb.run is not None:
+        wandb.log({'plots/val_vs_test_bar': _fig_to_wandb(fig)})
+
+
+# ─── Beam Sweep ──────────────────────────────────────────────────────
+
+BEAM_WIDTHS = [1, 2, 4, 8, 16, 32]
+
+
+def run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
+                   bart_tokenizer, exp_name):
+    """
+    Evaluate best model at beam widths 1–32 on val and test splits.
+    Logs a W&B Table (beam_sweep) and a per-metric line chart.
+    """
+    print(f"\n🔍 Beam size sweep — {exp_name}")
+    cols = ['split', 'beam_width', 'WER',
+            'BLEU-1', 'BLEU-2', 'BLEU-4', 'trans_BLEU-4', 'exact_match']
+    sweep_table = wandb.Table(columns=cols)
+    sweep_rows = []   # for plotting
+
+    for split_name, loader in [('val', val_loader), ('test', test_loader)]:
+        for bw in BEAM_WIDTHS:
+            ev = SignLanguageEvaluator(
+                model, loader, tokenizer, device,
+                bart_tokenizer=bart_tokenizer,
+                decode_mode='beam', beam_width=bw,
+            )
+            m, _ = ev.evaluate(verbose=False)
+            row = dict(
+                split=split_name, beam_width=bw,
+                WER=round(m.get('WER', 1.0), 4),
+                bleu1=round(m.get('BLEU-1', 0), 4),
+                bleu2=round(m.get('BLEU-2', 0), 4),
+                bleu4=round(m.get('BLEU-4', 0), 4),
+                trans_bleu4=round(m.get('trans_BLEU-4', 0), 4),
+                exact=round(m.get('exact_match', 0), 4),
+            )
+            sweep_rows.append(row)
+            sweep_table.add_data(
+                split_name, bw,
+                row['WER'], row['bleu1'], row['bleu2'], row['bleu4'],
+                row['trans_bleu4'], row['exact'],
+            )
+            print(f"  [{split_name}] beam={bw:2d}  "
+                  f"WER={row['WER']:.4f}  "
+                  f"BLEU-4={row['bleu4']:.4f}  "
+                  f"trans_BLEU-4={row['trans_bleu4']:.4f}")
+
+    wandb.log({'beam_sweep/table': sweep_table})
+
+    # ── Plot beam sweep charts ──
+    _plot_beam_sweep(sweep_rows)
+    print("  ✅ Beam sweep logged to W&B.")
+
+
 # ─── Main ────────────────────────────────────────────────────────────
 
 def main():
@@ -355,7 +501,7 @@ def main():
     # ─── Dataset defaults ───
     if args.root_dir is None:
         if args.dataset == 'phoenix':
-            args.root_dir = '../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/'
+            args.root_dir = '/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T'
         else:
             args.root_dir = '/data/how2sign_rgb'
     
@@ -485,54 +631,98 @@ def main():
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,
                       beam_width=args.beam_width)
     
-    # ─── Evaluate ───
-    print(f"\n🎯 FINAL EVALUATION ({exp_name})")
-    evaluator = SignLanguageEvaluator(
+    # ─── Load best checkpoint for final evaluation ───
+    best_ckpt = models_dir / 'best_model.pt'
+    if best_ckpt.exists():
+        ckpt = torch.load(best_ckpt, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        print(f"\n  📥 Loaded best checkpoint (epoch {ckpt.get('epoch','?')}, "
+              f"val_loss={ckpt.get('val_loss',float('nan')):.4f})")
+
+    # ─── Val (dev) evaluation ───
+    print(f"\n📊 VAL (DEV) SET EVALUATION ({exp_name})")
+    val_evaluator = SignLanguageEvaluator(
+        model, val_loader, tokenizer, device,
+        bart_tokenizer=bart_tokenizer,
+        decode_mode=args.decode, beam_width=args.beam_width,
+    )
+    val_metrics, val_data = val_evaluator.evaluate(verbose=False)
+    val_evaluator.print_metrics(val_metrics)
+    wandb.log({f"val_final/{k}": v for k, v in val_metrics.items()})
+
+    val_sample_rows = []
+    for i in range(min(50, len(val_data['names']))):
+        row = [val_data['names'][i], val_data['targets'][i], val_data['preds'][i]]
+        if val_data['trans_preds'] and i < len(val_data['trans_preds']):
+            row += [val_data['trans_targets'][i], val_data['trans_preds'][i]]
+        val_sample_rows.append(row)
+    val_cols = ['name', 'target_gloss', 'pred_gloss']
+    if val_data['trans_preds']:
+        val_cols += ['target_translation', 'pred_translation']
+    wandb.log({'val_final/predictions': wandb.Table(columns=val_cols, data=val_sample_rows)})
+
+    # ─── Test evaluation ───
+    print(f"\n🎯 TEST SET EVALUATION ({exp_name})")
+    test_evaluator = SignLanguageEvaluator(
         model, test_loader, tokenizer, device,
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
     )
-    metrics, eval_data = evaluator.evaluate(verbose=True)
-    evaluator.print_metrics(metrics)
-    
-    # ─── Save Everything ───
+    test_metrics, test_data = test_evaluator.evaluate(verbose=True)
+    test_evaluator.print_metrics(test_metrics)
+    wandb.log({f"test_final/{k}": v for k, v in test_metrics.items()})
+
+    test_sample_rows = []
+    for i in range(min(50, len(test_data['names']))):
+        row = [test_data['names'][i], test_data['targets'][i], test_data['preds'][i]]
+        if test_data['trans_preds'] and i < len(test_data['trans_preds']):
+            row += [test_data['trans_targets'][i], test_data['trans_preds'][i]]
+        test_sample_rows.append(row)
+    test_cols = ['name', 'target_gloss', 'pred_gloss']
+    if test_data['trans_preds']:
+        test_cols += ['target_translation', 'pred_translation']
+    wandb.log({'test_final/predictions': wandb.Table(columns=test_cols, data=test_sample_rows)})
+
+    # ─── Val vs Test summary table ───
+    summary_cols = ['split', 'WER', 'BLEU-1', 'BLEU-4',
+                    'trans_BLEU-1', 'trans_BLEU-4', 'exact_match']
+    summary_table = wandb.Table(columns=summary_cols)
+    for split_name, m in [('val', val_metrics), ('test', test_metrics)]:
+        summary_table.add_data(
+            split_name,
+            round(m.get('WER', 1.0), 4),
+            round(m.get('BLEU-1', 0), 4),
+            round(m.get('BLEU-4', 0), 4),
+            round(m.get('trans_BLEU-1', 0), 4),
+            round(m.get('trans_BLEU-4', 0), 4),
+            round(m.get('exact_match', 0), 4),
+        )
+    wandb.log({'results/val_vs_test': summary_table})
+    plot_val_test_comparison(val_metrics, test_metrics)
+
+    # ─── Beam sweep (val + test) ───
+    run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
+                   bart_tokenizer, exp_name)
+
+    # ─── Save experiment artefacts ───
     save_experiment(args, exp_name, results_dir, models_dir,
-                    metrics, eval_data, model, tokenizer)
-
-    # ─── Log final metrics + prediction samples to W&B ───
-    wandb.log({f"test/{k}": v for k, v in metrics.items()})
-
-    sample_rows = []
-    for i in range(min(50, len(eval_data['names']))):
-        row = [
-            eval_data['names'][i],
-            eval_data['targets'][i],
-            eval_data['preds'][i],
-        ]
-        if eval_data['trans_preds'] and i < len(eval_data['trans_preds']):
-            row += [eval_data['trans_targets'][i], eval_data['trans_preds'][i]]
-        sample_rows.append(row)
-
-    cols = ['name', 'target_gloss', 'pred_gloss']
-    if eval_data['trans_preds']:
-        cols += ['target_translation', 'pred_translation']
-    wandb.log({"test/predictions": wandb.Table(columns=cols, data=sample_rows)})
+                    test_metrics, test_data, model, tokenizer)
 
     wandb.finish()
     
-    # ─── Show Samples ───
-    print(f"\n🔍 Sample predictions:")
-    for i in range(min(10, len(eval_data['names']))):
-        correct = eval_data['preds'][i].strip() == eval_data['targets'][i].strip()
-        m = "✅" if correct else "❌"
-        print(f"  {m} Target: {eval_data['targets'][i]}")
-        print(f"     Pred:   {eval_data['preds'][i]}")
-        if eval_data['trans_preds'] and i < len(eval_data['trans_preds']):
-            print(f"     Trans:  {eval_data['trans_preds'][i]}")
+    # ─── Show test samples ───
+    print(f"\n🔍 Sample predictions (test):")
+    for i in range(min(10, len(test_data['names']))):
+        correct = test_data['preds'][i].strip() == test_data['targets'][i].strip()
+        mark = "✅" if correct else "❌"
+        print(f"  {mark} Target: {test_data['targets'][i]}")
+        print(f"     Pred:   {test_data['preds'][i]}")
+        if test_data['trans_preds'] and i < len(test_data['trans_preds']):
+            print(f"     Trans:  {test_data['trans_preds'][i]}")
         print()
-    
+
     print(f"\n✨ Experiment '{exp_name}' complete!")
-    return metrics
+    return test_metrics
 
 
 if __name__ == '__main__':
