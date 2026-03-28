@@ -11,7 +11,7 @@ Usage (NRP job):
 
 Usage (local):
     python analyze_datasets.py \
-        --phoenix_dir /data/how2sign_rgb/../phoenix2014t \
+        --phoenix_dir /data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \
         --how2sign_dir /data/how2sign_rgb
 """
 

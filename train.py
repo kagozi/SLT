@@ -355,7 +355,7 @@ def main():
     # ─── Dataset defaults ───
     if args.root_dir is None:
         if args.dataset == 'phoenix':
-            args.root_dir = '../phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T/'
+            args.root_dir = '/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T'
         else:
             args.root_dir = '/data/how2sign_rgb'
     
