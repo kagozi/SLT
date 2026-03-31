@@ -653,7 +653,9 @@ def main():
             src = ckpt.get('model_state_dict', ckpt)
             # Load only shared encoder weights; ignore head (vocab mismatch across datasets)
             encoder_keys = {k: v for k, v in src.items()
-                            if not k.startswith('head.') and not k.startswith('translation_head.')}
+                            if not k.startswith('head.')
+                            and not k.startswith('translation_head.')
+                            and k != 'pos_encoding.pe'}  # pe is a fixed sinusoidal buffer; drop to allow max_frames mismatch
             missing, unexpected = model.load_state_dict(encoder_keys, strict=False)
             print(f"  📥 Pretrained encoder loaded from {ckpt_path.name}")
             print(f"     Loaded {len(encoder_keys)} keys | "

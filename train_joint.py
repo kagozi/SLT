@@ -94,7 +94,7 @@ class JointTrainer:
                  phoenix_val, how2sign_val,
                  phoenix_tokenizer, how2sign_tokenizer,
                  device='cuda', batch_size=16, num_workers=4,
-                 models_dir='.'):
+                 models_dir='.', lr=1e-3):
         self.model = model.to(device)
         self.device = device
         self.phoenix_tok  = phoenix_tokenizer
@@ -118,9 +118,10 @@ class JointTrainer:
             how2sign_val, batch_size, shuffle=False,
             collate_fn=_h2s_col, num_workers=num_workers, pin_memory=True)
 
+        self.base_lr = lr
         self.criterion = CTCLoss(blank=0)
         self.optimizer = torch.optim.AdamW(
-            model.parameters(), lr=1e-3, weight_decay=1e-4)
+            model.parameters(), lr=lr, weight_decay=1e-4)
 
         steps_per_epoch = len(self.ph_train_loader) + len(self.h2s_train_loader)
         self.total_steps = steps_per_epoch * 150
@@ -142,7 +143,7 @@ class JointTrainer:
             p = (s - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             factor = 0.5 * (1 + math.cos(math.pi * p))
         for pg in self.optimizer.param_groups:
-            pg['lr'] = 1e-3 * factor
+            pg['lr'] = self.base_lr * factor
 
     def _ctc_step(self, batch):
         """Forward + CTC loss for one batch (either language)."""
@@ -384,6 +385,9 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--beam_width',  type=int, default=10)
     parser.add_argument('--seed',        type=int, default=42)
+    parser.add_argument('--decode',      type=str, default='beam',
+                        choices=['beam', 'greedy'])
+    parser.add_argument('--lr',          type=float, default=1e-3)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -451,6 +455,7 @@ def main():
         phoenix_tok, how2sign_tok,
         device=device, batch_size=args.batch_size,
         num_workers=args.num_workers, models_dir=str(models_dir),
+        lr=args.lr,
     )
     trainer.train(num_epochs=args.epochs, beam_width=args.beam_width)
 
