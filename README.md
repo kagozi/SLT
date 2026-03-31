@@ -10,6 +10,7 @@ End-to-end sign language recognition and translation using body keypoints extrac
 
 - [Architecture](#architecture)
 - [Experiments](#experiments)
+- [Transfer Learning](#transfer-learning)
 - [Pseudogloss Methods](#pseudogloss-methods)
 - [Datasets](#datasets)
 - [Project Structure](#project-structure)
@@ -65,13 +66,80 @@ Transformer Encoder (4 × TransformerBlock)
 
 ## Experiments
 
+### Base Experiments (Exps 1–6)
+
 | # | Dataset | Mode | Pseudoglosses | Key Flags |
 |---|---|---|---|---|
 | 1 | PHOENIX-2014-T | Sign2Gloss | Ground-truth glosses | *(default)* |
-| 2 | PHOENIX-2014-T | Sign2Gloss2Text | Ground-truth glosses | `--use_bart --ctc_weight 0.5 --freeze_bart_epochs 15` |
+| 2 | PHOENIX-2014-T | Sign2Gloss2Text | Ground-truth glosses | `--use_bart --ctc_weight 0.5 --freeze_bart_epochs 20` |
 | 3 | PHOENIX-2014-T | Glossless Sign2Text | None | `--use_bart --ctc_weight 0.0` |
 | 4 | How2Sign | Glossless Sign2Text | None (baseline) | `--dataset how2sign --use_bart --ctc_weight 0.0` |
-| 5 | How2Sign | POS Pseudogloss + BART | Option A: POS-based | `--dataset how2sign --use_bart --ctc_weight 0.5` |
+| 5 | How2Sign | Sign2Gloss2Text | POS pseudo-glosses | `--dataset how2sign --use_bart --ctc_weight 0.5` |
+| 6 | How2Sign | Sign2Gloss | POS pseudo-glosses | `--dataset how2sign` |
+
+### Transfer Learning Experiments (Exps 7–14)
+
+See [TRANSFER_LEARNING.md](TRANSFER_LEARNING.md) for full details.
+
+| # | Dataset | Pretrained From | Freeze Strategy | Notes |
+|---|---|---|---|---|
+| 7 | How2Sign | Exp 1 (PHOENIX) | Full encoder frozen | CTC head only trained |
+| 8 | How2Sign | Exp 1 (PHOENIX) | ConvBlocks frozen | Fine-tune Transformer + CTC |
+| 9 | How2Sign | Exp 1 (PHOENIX) | None (full fine-tune) | Low LR (5e-5) |
+| 10 | How2Sign | — | None | Scratch control baseline |
+| 11 | PHOENIX + How2Sign | — | — | Joint training, language-aware encoder |
+| 12 | How2Sign (10% data) | Exp 1 (PHOENIX) | None | Low-data adaptation |
+| 13 | How2Sign (5% data) | Exp 1 (PHOENIX) | None | Low-data adaptation |
+| 14 | How2Sign (1% data) | Exp 1 (PHOENIX) | None | Extreme low-resource |
+
+---
+
+## Transfer Learning
+
+**Research Question:** Does pretraining on PHOENIX-2014-T (German Sign Language / DGS) improve generalisation on How2Sign (American Sign Language / ASL), and which representations transfer across typologically distinct sign languages?
+
+Both datasets use identical 225-dim MediaPipe keypoints, removing the modality gap. DGS and ASL are linguistically unrelated, making any positive transfer evidence of **language-agnostic gesture representations**.
+
+### Architecture Extensions
+
+**Freeze strategies** (`--freeze_strategy full|convblocks|none`):
+```
+Full freeze:       [input_proj] [conv_blocks] [transformer_blocks] [head ← TRAIN ONLY]
+ConvBlocks freeze: [input_proj] [conv_blocks] [transformer_blocks ← TRAIN] [head ← TRAIN]
+Full fine-tune:    all layers ← TRAIN (low LR: 5e-5 to prevent catastrophic forgetting)
+```
+
+**Language-Aware Joint Encoder** (`LanguageAwareSignTransformer` in `models.py`):
+```
+x (225-dim) → input_proj → pos_encoding → + lang_embedding(0=DGS, 1=ASL)
+            → conv_blocks → transformer_blocks
+            → head_phoenix (if lang=0) | head_how2sign (if lang=1)
+```
+
+### Running Transfer Experiments
+
+```bash
+# Prerequisites: Exp 1 must finish first
+kubectl apply -f nautilius/train-exp1-phoenix-sign2gloss.yaml
+# Wait for completion, then:
+
+# Launch all transfer experiments at once
+bash run_transfer_experiments.sh
+
+# Or selectively:
+bash run_transfer_experiments.sh --freeze    # Exps 7-10 (freeze strategy comparison)
+bash run_transfer_experiments.sh --joint     # Exp 11 (joint training)
+bash run_transfer_experiments.sh --lowdata   # Exps 12-14 (low-data adaptation)
+bash run_transfer_experiments.sh --features  # Feature extraction + UMAP/t-SNE (run last)
+```
+
+### Representation Analysis
+
+`extract_features.py` visualises what the encoder learns:
+- **UMAP/t-SNE** colored by DGS vs ASL — if clusters intermix, encoder is language-agnostic
+- **Cross-lingual cosine similarity** — intra-DGS vs intra-ASL vs cross-lingual distance
+- **Attention heatmaps** — which frames attend to which
+- All plots logged to W&B under `representations/*`
 
 ---
 
@@ -130,14 +198,19 @@ Large-scale American Sign Language dataset (~80 hours of instructional video). N
 ```
 slt/
 ├── train.py                          # Main training + evaluation entry point
-├── models.py                         # SignLanguageTransformer, BARTTranslationHead
+├── train_joint.py                    # Joint PHOENIX+How2Sign training (Exp 11)
+├── extract_features.py               # UMAP/t-SNE encoder representation analysis
+├── models.py                         # SignLanguageTransformer, LanguageAwareSignTransformer
 ├── dataset.py                        # PhoenixSignDataset
 ├── dataset_how2sign.py               # How2SignDataset (loads PSEUDOGLOSS column)
 ├── preprocessing.py                  # PhoenixKeypointExtractor (MediaPipe)
 ├── preextract_keypoints.py           # Offline Phoenix keypoint extraction
 ├── generate_pseudoglosses_how2sign.py# Option A: POS-based pseudogloss generation
+├── analyze_datasets.py               # Dataset analysis + W&B logging
 ├── evaluate.py                       # Standalone evaluation
 ├── utils.py                          # GlossTokenizer, Trainer, collate_fn, CTC decoding
+├── TRANSFER_LEARNING.md              # Full transfer learning experiment plan
+├── run_transfer_experiments.sh       # Master runner for Exps 7–14
 ├── Dockerfile                        # Image: ghcr.io/kagozi/slt:latest
 ├── environment.yaml                  # Conda environment spec
 │
@@ -155,12 +228,22 @@ slt/
     ├── download-how2sign-job.yaml        # DEPRECATED — How2Sign now uploaded manually to /data/how2sign_rgb/
     ├── preextract-phoenix-job.yaml       # Job: MediaPipe keypoint extraction
     ├── generate-pseudoglosses-job.yaml   # Job: Option A POS pseudogloss generation
+    ├── analyze-datasets-job.yaml         # Job: dataset analysis + W&B logging
     ├── train-exp1-phoenix-sign2gloss.yaml
     ├── train-exp2-phoenix-sign2gloss2text.yaml
     ├── train-exp3-phoenix-glossless.yaml
     ├── train-exp4-how2sign-glossless.yaml
-    ├── train-exp5-how2sign-pseudogloss.yaml   # How2Sign Sign2Gloss2Text (CTC+BART)
-    └── train-exp6-how2sign-sign2gloss.yaml    # How2Sign Sign2Gloss (CTC-only)
+    ├── train-exp5-how2sign-pseudogloss.yaml      # How2Sign Sign2Gloss2Text (CTC+BART)
+    ├── train-exp6-how2sign-sign2gloss.yaml       # How2Sign Sign2Gloss (CTC-only)
+    ├── train-exp7-transfer-full-freeze.yaml      # Transfer: full encoder freeze
+    ├── train-exp8-transfer-conv-freeze.yaml      # Transfer: ConvBlocks frozen
+    ├── train-exp9-transfer-full-finetune.yaml    # Transfer: full fine-tune (low LR)
+    ├── train-exp10-transfer-scratch.yaml         # Transfer: scratch control
+    ├── train-exp11-joint-training.yaml           # Joint PHOENIX+How2Sign
+    ├── train-exp12-lowdata-10pct.yaml            # Low-data: 10% of How2Sign
+    ├── train-exp13-lowdata-5pct.yaml             # Low-data: 5% of How2Sign
+    ├── train-exp14-lowdata-1pct.yaml             # Low-data: 1% of How2Sign
+    └── extract-features-job.yaml                 # UMAP/t-SNE feature analysis
 ```
 
 ---
@@ -234,7 +317,7 @@ kubectl apply -f nautilius/preextract-phoenix-job.yaml
 kubectl apply -f nautilius/generate-pseudoglosses-job.yaml
 ```
 
-### Launch all 5 experiments simultaneously
+### Launch base experiments (Exps 1–6)
 
 ```bash
 kubectl apply -f nautilius/train-exp1-phoenix-sign2gloss.yaml
@@ -242,6 +325,17 @@ kubectl apply -f nautilius/train-exp2-phoenix-sign2gloss2text.yaml
 kubectl apply -f nautilius/train-exp3-phoenix-glossless.yaml
 kubectl apply -f nautilius/train-exp4-how2sign-glossless.yaml
 kubectl apply -f nautilius/train-exp5-how2sign-pseudogloss.yaml
+kubectl apply -f nautilius/train-exp6-how2sign-sign2gloss.yaml
+```
+
+### Launch transfer learning experiments (Exps 7–14)
+
+```bash
+# Run AFTER Exp 1 completes (provides the pretrained checkpoint)
+bash run_transfer_experiments.sh
+
+# After all training jobs finish, run representation analysis:
+bash run_transfer_experiments.sh --features
 ```
 
 ### Monitor
@@ -333,7 +427,7 @@ python train.py --dataset how2sign \
 | `--root_dir` | auto | Dataset root path |
 | `--output_dir` | `..` | Base dir for `results/` and `models/` |
 | `--epochs` | 100 | Training epochs |
-| `--dim` | 192 | Model hidden dimension |
+| `--dim` | 256 | Model hidden dimension |
 | `--batch_size` | 20 | Batch size |
 | `--decode` | `greedy` | `greedy` or `beam` |
 | `--beam_width` | 10 | Beam search width |
@@ -342,6 +436,10 @@ python train.py --dataset how2sign \
 | `--freeze_bart_epochs` | 5 | Epochs to freeze BART before joint training |
 | `--exp_name` | auto | Custom experiment name |
 | `--resume` | — | Path to checkpoint to resume from |
+| `--pretrained_path` | — | Path to pretrained checkpoint for transfer learning |
+| `--freeze_strategy` | `none` | `full`, `convblocks`, or `none` — encoder freeze for transfer |
+| `--subset_pct` | `100` | % of training data to use (for low-data experiments) |
+| `--lr` | `1e-3` | Base learning rate (use `5e-5` for full fine-tune transfer) |
 
 ---
 

@@ -1,10 +1,10 @@
-# Experiment 5: How2Sign — Sign2Gloss2Text (joint CTC + BART with POS pseudo-glosses)
-# CTC uses pseudo-glosses as weak supervision; BART translates to English text.
-# Run AFTER generate-pseudoglosses job writes PSEUDOGLOSS column to annotations CSVs.
+# Experiment 10: How2Sign — Scratch Baseline (Transfer Control)
+# Identical hyperparameters to Exp 9 but NO pretrained weights.
+# Control experiment: measures how much Exps 7-9 benefit from PHOENIX pretraining.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp5-how2sign-pseudogloss
+  name: train-exp10-transfer-scratch
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -24,9 +24,9 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp5_how2sign_sign2gloss2text"
+          - "exp10_transfer_scratch"
           - "--epochs"
-          - "300"
+          - "100"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -39,11 +39,10 @@ spec:
           - "300"
           - "--num_workers"
           - "4"
-          - "--use_bart"
-          - "--ctc_weight"
+          - "--dropout"
           - "0.3"
-          - "--freeze_bart_epochs"
-          - "5"
+          - "--lr"
+          - "1e-3"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -53,11 +52,11 @@ spec:
         resources:
           requests:
             cpu: "4"
-            memory: "32Gi"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "4"
-            memory: "32Gi"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data
