@@ -257,3 +257,117 @@ class SignLanguageTransformer(nn.Module):
         if self.translation_head: self.translation_head.freeze()
     def unfreeze_translation(self):
         if self.translation_head: self.translation_head.unfreeze()
+
+    # ── Transfer learning freeze controls ────────────────────────────
+
+    def freeze_encoder(self):
+        """Freeze entire encoder (input_proj, pos_encoding, conv_blocks, transformer_blocks).
+        Only the CTC head and optional BART head remain trainable.
+        Use for Exp 7 (full freeze transfer)."""
+        for p in self.input_proj.parameters():        p.requires_grad = False
+        for p in self.norm.parameters():              p.requires_grad = False
+        for blk in self.conv_blocks:
+            for p in blk.parameters():                p.requires_grad = False
+        for blk in self.transformer_blocks:
+            for p in blk.parameters():                p.requires_grad = False
+
+    def freeze_convblocks(self):
+        """Freeze only the convolutional blocks (low-level temporal features).
+        Transformer blocks remain trainable — recommended strategy from ULMFiT/BERT.
+        Use for Exp 8 (ConvBlocks freeze transfer)."""
+        for p in self.input_proj.parameters():        p.requires_grad = False
+        for p in self.norm.parameters():              p.requires_grad = False
+        for blk in self.conv_blocks:
+            for p in blk.parameters():                p.requires_grad = False
+
+    def unfreeze_encoder(self):
+        """Restore full gradient flow across the entire model."""
+        for p in self.parameters():                   p.requires_grad = True
+
+    def trainable_params(self) -> int:
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def frozen_params(self) -> int:
+        return sum(p.numel() for p in self.parameters() if not p.requires_grad)
+
+
+class LanguageAwareSignTransformer(SignLanguageTransformer):
+    """
+    Extension of SignLanguageTransformer for joint PHOENIX + How2Sign training.
+
+    Adds a learned language-identity embedding (lang_id ∈ {0, 1}) that is
+    summed into the input after positional encoding.  Separate CTC heads are
+    used per language so that the shared encoder must produce representations
+    that are useful for BOTH gloss vocabularies simultaneously.
+
+    Architecture:
+        x (225) → input_proj → norm → pos_encoding
+               → + lang_embedding(lang_id)          ← NEW
+               → conv_blocks → transformer_blocks
+               → head_phoenix  (if lang_id == 0)
+               → head_how2sign (if lang_id == 1)
+    """
+
+    def __init__(self, input_dim=225, dim=256,
+                 num_classes_phoenix=1085, num_classes_how2sign=2048,
+                 max_frames=500, dropout=0.3,
+                 use_bart=False, bart_model='facebook/bart-base', ctc_weight=0.3):
+        # Build the shared encoder (num_classes is a dummy; we replace head below)
+        super().__init__(
+            input_dim=input_dim, dim=dim,
+            num_classes=num_classes_phoenix,   # head_phoenix
+            max_frames=max_frames, dropout=dropout,
+            use_bart=use_bart, bart_model=bart_model, ctc_weight=ctc_weight,
+        )
+        # Language embedding: 0=PHOENIX(DGS), 1=How2Sign(ASL)
+        self.lang_embedding = nn.Embedding(2, dim)
+        nn.init.normal_(self.lang_embedding.weight, std=0.02)
+
+        # Second CTC head for How2Sign
+        self.head_how2sign = nn.Sequential(
+            nn.Linear(dim, dim * 2), nn.ReLU(), nn.Dropout(0.4),
+            nn.Linear(dim * 2, num_classes_how2sign),
+        )
+        # Rename base head for clarity
+        self.head_phoenix = self.head
+
+    def encode(self, x, mask=None, lang_id=None):
+        """Encode with optional language embedding injection."""
+        if mask is None:
+            mask = (x.abs().sum(dim=-1) != 0).float()
+        x = self.input_proj(x)
+        x = self.norm(x)
+        x = self.pos_encoding(x)
+
+        if lang_id is not None:
+            # lang_id: (B,) int tensor
+            lang_emb = self.lang_embedding(lang_id)          # (B, dim)
+            x = x + lang_emb.unsqueeze(1)                    # broadcast over T
+
+        for blk in self.conv_blocks:
+            x, mask = blk(x, mask)
+        for blk in self.transformer_blocks:
+            x, mask = blk(x, mask)
+        return x, mask
+
+    def forward(self, x, mask=None, lang_id=None, translation_targets=None):
+        hidden, mask = self.encode(x, mask, lang_id=lang_id)
+
+        # Select CTC head based on language
+        if lang_id is not None and (lang_id == 1).all():
+            logits = self.head_how2sign(hidden)
+        else:
+            logits = self.head_phoenix(hidden)
+
+        if not self.use_bart:
+            return logits, mask
+
+        output = {'logits': logits, 'mask': mask, 'hidden': hidden}
+        if translation_targets is not None and self.translation_head is not None:
+            try:
+                trans_out = self.translation_head(hidden, encoder_mask=mask,
+                                                   labels=translation_targets)
+                output['translation_loss'] = trans_out['loss']
+            except Exception:
+                pass
+        return output

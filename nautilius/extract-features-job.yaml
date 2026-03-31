@@ -1,0 +1,54 @@
+# Extract encoder features for UMAP/t-SNE representation analysis
+# Runs AFTER all training experiments complete (uses best checkpoints).
+# Compares PHOENIX vs How2Sign encoder representations to test language-agnosticism.
+# Logs UMAP, t-SNE, cosine similarity plots, and attention heatmaps to W&B.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: extract-features
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: extractor
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "extract_features.py"]
+        args:
+          - "--phoenix_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--how2sign_dir"
+          - "/data/how2sign_rgb"
+          - "--checkpoint"
+          - "/data/experiments/exp11_joint_training/models/best_model.pt"
+          - "--output_dir"
+          - "/data/experiments/features"
+          - "--n_samples"
+          - "500"
+          - "--exp_name"
+          - "features_joint_encoder"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        resources:
+          requests:
+            cpu: "4"
+            memory: "24Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "24Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

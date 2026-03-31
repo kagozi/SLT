@@ -1,10 +1,11 @@
-# Experiment 5: How2Sign — Sign2Gloss2Text (joint CTC + BART with POS pseudo-glosses)
-# CTC uses pseudo-glosses as weak supervision; BART translates to English text.
-# Run AFTER generate-pseudoglosses job writes PSEUDOGLOSS column to annotations CSVs.
+# Experiment 14: How2Sign — Low-data Transfer (1% training data)
+# Pretrained from Exp 1 (PHOENIX Sign2Gloss). Full fine-tune on 1% of How2Sign train set.
+# Extreme low-resource scenario: tests whether cross-lingual pretrain enables few-shot SLR.
+# Depends on: Exp 1 checkpoint at /data/experiments/exp1_phoenix_sign2gloss/models/best_model.pt
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp5-how2sign-pseudogloss
+  name: train-exp14-lowdata-1pct
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -24,9 +25,9 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp5_how2sign_sign2gloss2text"
+          - "exp14_lowdata_1pct"
           - "--epochs"
-          - "300"
+          - "100"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -39,11 +40,16 @@ spec:
           - "300"
           - "--num_workers"
           - "4"
-          - "--use_bart"
-          - "--ctc_weight"
+          - "--dropout"
           - "0.3"
-          - "--freeze_bart_epochs"
-          - "5"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp1_phoenix_sign2gloss/best_model.pt"
+          - "--freeze_strategy"
+          - "none"
+          - "--lr"
+          - "5e-5"
+          - "--subset_pct"
+          - "1"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -53,11 +59,11 @@ spec:
         resources:
           requests:
             cpu: "4"
-            memory: "32Gi"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "4"
-            memory: "32Gi"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

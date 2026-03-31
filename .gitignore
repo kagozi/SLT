@@ -16,3 +16,5 @@ slurm-*.out
 data
 paper/*
 .DS_Store
+TRANSFER_LEARNING.md
+results_local

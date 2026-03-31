@@ -1,10 +1,12 @@
-# Experiment 5: How2Sign — Sign2Gloss2Text (joint CTC + BART with POS pseudo-glosses)
-# CTC uses pseudo-glosses as weak supervision; BART translates to English text.
-# Run AFTER generate-pseudoglosses job writes PSEUDOGLOSS column to annotations CSVs.
+# Experiment 11: Joint PHOENIX + How2Sign Training (Language-Aware Encoder)
+# Uses LanguageAwareSignTransformer with separate CTC heads per language.
+# Alternating batches: PHOENIX (lang_id=0) → How2Sign (lang_id=1) → ...
+# Language embedding (nn.Embedding(2, dim)) steers encoder per-language.
+# Goal: learn a unified cross-lingual sign representation in the shared encoder.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp5-how2sign-pseudogloss
+  name: train-exp11-joint-training
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -15,18 +17,18 @@ spec:
       containers:
       - name: trainer
         image: ghcr.io/kagozi/slt:latest
-        command: ["python", "train.py"]
+        command: ["python", "train_joint.py"]
         args:
-          - "--dataset"
-          - "how2sign"
-          - "--root_dir"
+          - "--phoenix_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--how2sign_dir"
           - "/data/how2sign_rgb"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp5_how2sign_sign2gloss2text"
+          - "exp11_joint_training"
           - "--epochs"
-          - "300"
+          - "150"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -39,11 +41,10 @@ spec:
           - "300"
           - "--num_workers"
           - "4"
-          - "--use_bart"
-          - "--ctc_weight"
+          - "--dropout"
           - "0.3"
-          - "--freeze_bart_epochs"
-          - "5"
+          - "--lr"
+          - "1e-3"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -53,11 +54,11 @@ spec:
         resources:
           requests:
             cpu: "4"
-            memory: "32Gi"
+            memory: "24Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "4"
-            memory: "32Gi"
+            memory: "24Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

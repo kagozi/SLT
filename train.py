@@ -30,8 +30,8 @@ How2Sign experiments:
   # Exp 5: How2Sign Sign2Gloss2Text (joint CTC + BART with pseudo-glosses)
   python train.py --dataset how2sign --exp_name exp5_how2sign_sign2gloss2text \\
       --root_dir /data/how2sign_rgb \\
-      --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10 \\
-      --use_bart --ctc_weight 0.5 --freeze_bart_epochs 20
+      --dim 256 --epochs 300 --max_frames 300 --decode beam --beam_width 10 \\
+      --use_bart --ctc_weight 0.3 --freeze_bart_epochs 5
 
   # Exp 6: How2Sign Sign2Gloss (CTC-only, pseudo-glosses as labels)
   python train.py --dataset how2sign --exp_name exp6_how2sign_sign2gloss \\
@@ -116,7 +116,8 @@ def setup_directories(exp_name, output_dir=None):
 
 class SignLanguageEvaluator:
     def __init__(self, model, test_loader, tokenizer, device='cuda',
-                 bart_tokenizer=None, decode_mode='greedy', beam_width=5):
+                 bart_tokenizer=None, decode_mode='greedy', beam_width=5,
+                 use_ctc=True):
         self.model = model.to(device)
         self.test_loader = test_loader
         self.tokenizer = tokenizer
@@ -124,6 +125,7 @@ class SignLanguageEvaluator:
         self.device = device
         self.decode_mode = decode_mode
         self.beam_width = beam_width
+        self.use_ctc = use_ctc  # False when ctc_weight==0 (glossless mode)
 
     @torch.no_grad()
     def evaluate(self, verbose=True):
@@ -146,17 +148,18 @@ class SignLanguageEvaluator:
                 logits, mask_out = self.model(keypoints, mask)
             inference_times.append(time.time() - start)
 
-            logits_cpu = logits.cpu()
-            input_lengths = mask_out.sum(dim=1).long().cpu()
-
-            if self.decode_mode == 'beam':
-                preds = ctc_beam_decode(logits_cpu, input_lengths, self.beam_width)
-            else:
-                preds = ctc_greedy_decode(logits_cpu, input_lengths)
-            for p in preds:
-                all_preds.append(self.tokenizer.decode(p))
-            all_targets.extend(batch['gloss_text'])
             all_names.extend(batch['name'])
+
+            if self.use_ctc:
+                logits_cpu = logits.cpu()
+                input_lengths = mask_out.sum(dim=1).long().cpu()
+                if self.decode_mode == 'beam':
+                    preds = ctc_beam_decode(logits_cpu, input_lengths, self.beam_width)
+                else:
+                    preds = ctc_greedy_decode(logits_cpu, input_lengths)
+                for p in preds:
+                    all_preds.append(self.tokenizer.decode(p))
+                all_targets.extend(batch['gloss_text'])
             
             if self.model.use_bart and self.bart_tokenizer is not None:
                 try:
@@ -172,7 +175,8 @@ class SignLanguageEvaluator:
             if verbose and batch_idx % 10 == 0:
                 print(f"  Eval batch {batch_idx}/{len(self.test_loader)}")
 
-        metrics = self._compute_metrics(all_preds, all_targets, inference_times)
+        metrics = self._compute_metrics(all_preds, all_targets, inference_times,
+                                        use_ctc=self.use_ctc)
         if all_trans_preds:
             trans_bleu = self._compute_bleu(all_trans_preds, all_trans_targets)
             metrics['trans_BLEU-1'] = trans_bleu.get('BLEU-1', 0)
@@ -184,16 +188,21 @@ class SignLanguageEvaluator:
             'trans_preds': all_trans_preds, 'trans_targets': all_trans_targets,
         }
 
-    def _compute_metrics(self, preds, targets, times):
+    def _compute_metrics(self, preds, targets, times, use_ctc=True):
         metrics = {
-            'total_samples': len(preds),
+            'total_samples': len(preds) if use_ctc else len(times),
             'avg_inference_ms': float(np.mean(times) * 1000),
-            'WER': float(self._compute_wer(preds, targets)),
         }
-        bleu = self._compute_bleu(preds, targets)
-        metrics.update(bleu)
-        exact = sum(1 for p, t in zip(preds, targets) if p.strip() == t.strip())
-        metrics['exact_match'] = exact / len(preds) if preds else 0
+        if use_ctc and preds:
+            metrics['WER'] = float(self._compute_wer(preds, targets))
+            bleu = self._compute_bleu(preds, targets)
+            metrics.update(bleu)
+            exact = sum(1 for p, t in zip(preds, targets) if p.strip() == t.strip())
+            metrics['exact_match'] = exact / len(preds)
+        else:
+            # Glossless mode: CTC metrics are not meaningful — only translation metrics matter
+            metrics['WER'] = None
+            metrics['exact_match'] = None
         return metrics
 
     def _compute_wer(self, preds, targets):
@@ -239,12 +248,15 @@ class SignLanguageEvaluator:
         print("="*60)
         print(f"  Decode:  {self.decode_mode} (beam={self.beam_width})")
         print(f"  Samples: {metrics['total_samples']}")
-        print(f"  WER:     {metrics['WER']:.2%}")
-        print(f"  BLEU-1:  {metrics.get('BLEU-1', 0):.4f}")
-        print(f"  BLEU-4:  {metrics.get('BLEU-4', 0):.4f}")
-        print(f"  Exact:   {metrics.get('exact_match', 0):.2%}")
+        if metrics.get('WER') is not None:
+            print(f"  WER:     {metrics['WER']:.2%}")
+            print(f"  BLEU-1:  {metrics.get('BLEU-1', 0):.4f}")
+            print(f"  BLEU-4:  {metrics.get('BLEU-4', 0):.4f}")
+            print(f"  Exact:   {metrics.get('exact_match', 0):.2%}")
+        else:
+            print(f"  WER/BLEU: N/A (glossless mode — CTC not used)")
         if 'trans_BLEU-1' in metrics:
-            print(f"  --- Translation (German) ---")
+            print(f"  --- Translation ---")
             print(f"  Trans BLEU-1: {metrics['trans_BLEU-1']:.4f}")
             print(f"  Trans BLEU-4: {metrics['trans_BLEU-4']:.4f}")
         print("="*60)
@@ -403,7 +415,7 @@ BEAM_WIDTHS = [1, 2, 4, 8, 16, 32]
 
 
 def run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
-                   bart_tokenizer, exp_name):
+                   bart_tokenizer, exp_name, use_ctc=True):
     """
     Evaluate best model at beam widths 1–32 on val and test splits.
     Logs a W&B Table (beam_sweep) and a per-metric line chart.
@@ -420,11 +432,12 @@ def run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
                 model, loader, tokenizer, device,
                 bart_tokenizer=bart_tokenizer,
                 decode_mode='beam', beam_width=bw,
+                use_ctc=use_ctc,
             )
             m, _ = ev.evaluate(verbose=False)
             row = dict(
                 split=split_name, beam_width=bw,
-                WER=round(m.get('WER', 1.0), 4),
+                WER=round(m['WER'] if m.get('WER') is not None else float('nan'), 4),
                 bleu1=round(m.get('BLEU-1', 0), 4),
                 bleu2=round(m.get('BLEU-2', 0), 4),
                 bleu4=round(m.get('BLEU-4', 0), 4),
@@ -491,6 +504,18 @@ def main():
                         help='Base dir for results/ and models/ (default: ..)')
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--eval_only', action='store_true')
+
+    # Transfer learning
+    parser.add_argument('--pretrained_path', type=str, default=None,
+                        help='Path to pretrained checkpoint (.pt) to initialise encoder from')
+    parser.add_argument('--freeze_strategy', type=str, default='none',
+                        choices=['none', 'convblocks', 'full'],
+                        help='Encoder freeze strategy for transfer learning: '
+                             'none=full fine-tune, convblocks=freeze conv only, '
+                             'full=freeze entire encoder (train head only)')
+    parser.add_argument('--subset_pct', type=float, default=100.0,
+                        help='Percentage of training data to use (1-100). '
+                             'Used for low-data adaptation experiments.')
     
     args = parser.parse_args()
     
@@ -515,7 +540,12 @@ def main():
     wandb.init(
         project="slt",
         name=exp_name,
-        config=vars(args),
+        config={
+            **vars(args),
+            'is_transfer': args.pretrained_path is not None,
+            'freeze_strategy': args.freeze_strategy,
+            'subset_pct': args.subset_pct,
+        },
         dir=str(results_dir),
     )
 
@@ -578,7 +608,17 @@ def main():
         test_ds = How2SignDataset(args.root_dir, 'test', args.max_frames, False,
                                    tokenizer, bart_tokenizer)
     
-    sample = train_ds[0]
+    # ── Low-data subset sampling ──
+    if args.subset_pct < 100.0:
+        n_keep = max(1, int(len(train_ds) * args.subset_pct / 100.0))
+        indices = random.sample(range(len(train_ds)), n_keep)
+        from torch.utils.data import Subset
+        train_ds = Subset(train_ds, indices)
+        print(f"  ⚡ Low-data mode: using {n_keep}/{len(train_ds)} training samples "
+              f"({args.subset_pct:.0f}%)")
+
+    sample = (train_ds[0] if not hasattr(train_ds, 'dataset')
+              else train_ds.dataset[train_ds.indices[0]])
     input_dim = sample['keypoints'].shape[-1]
     args.input_dim_detected = input_dim
     print(f"  input_dim={input_dim}, vocab={tokenizer.vocab_size}, "
@@ -605,13 +645,40 @@ def main():
         ctc_weight=args.ctc_weight,
     )
     
+    # ── Load pretrained encoder (transfer learning) ──
+    if args.pretrained_path and args.pretrained_path.lower() != 'none':
+        ckpt_path = Path(args.pretrained_path)
+        if ckpt_path.exists():
+            ckpt = torch.load(ckpt_path, map_location='cpu')
+            src = ckpt.get('model_state_dict', ckpt)
+            # Load only shared encoder weights; ignore head (vocab mismatch across datasets)
+            encoder_keys = {k: v for k, v in src.items()
+                            if not k.startswith('head.') and not k.startswith('translation_head.')}
+            missing, unexpected = model.load_state_dict(encoder_keys, strict=False)
+            print(f"  📥 Pretrained encoder loaded from {ckpt_path.name}")
+            print(f"     Loaded {len(encoder_keys)} keys | "
+                  f"missing={len(missing)} | unexpected={len(unexpected)}")
+        else:
+            print(f"  ⚠️  Pretrained path not found: {args.pretrained_path} — training from scratch")
+
+    # ── Apply freeze strategy ──
+    if args.freeze_strategy == 'full':
+        model.freeze_encoder()
+        print("  🔒 Freeze: FULL — only CTC head is trainable")
+    elif args.freeze_strategy == 'convblocks':
+        model.freeze_convblocks()
+        print("  🔒 Freeze: CONVBLOCKS — transformer blocks + head are trainable")
+    else:
+        print("  🔓 Freeze: NONE — full fine-tuning")
+
     total_params = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"🤖 Model: {total_params:,} total, {trainable:,} trainable")
-    
+    trainable    = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    frozen       = total_params - trainable
+    print(f"🤖 Model: {total_params:,} total | {trainable:,} trainable | {frozen:,} frozen")
+
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"💻 Device: {device}")
-    
+
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt['model_state_dict'])
@@ -639,12 +706,15 @@ def main():
         print(f"\n  📥 Loaded best checkpoint (epoch {ckpt.get('epoch','?')}, "
               f"val_loss={ckpt.get('val_loss',float('nan')):.4f})")
 
+    use_ctc = args.ctc_weight > 0
+
     # ─── Val (dev) evaluation ───
     print(f"\n📊 VAL (DEV) SET EVALUATION ({exp_name})")
     val_evaluator = SignLanguageEvaluator(
         model, val_loader, tokenizer, device,
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
+        use_ctc=use_ctc,
     )
     val_metrics, val_data = val_evaluator.evaluate(verbose=False)
     val_evaluator.print_metrics(val_metrics)
@@ -667,6 +737,7 @@ def main():
         model, test_loader, tokenizer, device,
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
+        use_ctc=use_ctc,
     )
     test_metrics, test_data = test_evaluator.evaluate(verbose=True)
     test_evaluator.print_metrics(test_metrics)
@@ -690,19 +761,19 @@ def main():
     for split_name, m in [('val', val_metrics), ('test', test_metrics)]:
         summary_table.add_data(
             split_name,
-            round(m.get('WER', 1.0), 4),
+            round(m['WER'], 4) if m.get('WER') is not None else float('nan'),
             round(m.get('BLEU-1', 0), 4),
             round(m.get('BLEU-4', 0), 4),
             round(m.get('trans_BLEU-1', 0), 4),
             round(m.get('trans_BLEU-4', 0), 4),
-            round(m.get('exact_match', 0), 4),
+            round(m.get('exact_match', 0), 4) if m.get('exact_match') is not None else float('nan'),
         )
     wandb.log({'results/val_vs_test': summary_table})
     plot_val_test_comparison(val_metrics, test_metrics)
 
     # ─── Beam sweep (val + test) ───
     run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
-                   bart_tokenizer, exp_name)
+                   bart_tokenizer, exp_name, use_ctc=use_ctc)
 
     # ─── Save experiment artefacts ───
     save_experiment(args, exp_name, results_dir, models_dir,
