@@ -117,7 +117,7 @@ def setup_directories(exp_name, output_dir=None):
 class SignLanguageEvaluator:
     def __init__(self, model, test_loader, tokenizer, device='cuda',
                  bart_tokenizer=None, decode_mode='greedy', beam_width=5,
-                 use_ctc=True):
+                 use_ctc=True, forced_bos_token_id=None):
         self.model = model.to(device)
         self.test_loader = test_loader
         self.tokenizer = tokenizer
@@ -126,6 +126,7 @@ class SignLanguageEvaluator:
         self.decode_mode = decode_mode
         self.beam_width = beam_width
         self.use_ctc = use_ctc  # False when ctc_weight==0 (glossless mode)
+        self.forced_bos_token_id = forced_bos_token_id
 
     @torch.no_grad()
     def evaluate(self, verbose=True):
@@ -163,7 +164,8 @@ class SignLanguageEvaluator:
             
             if self.model.use_bart and self.bart_tokenizer is not None:
                 try:
-                    token_ids = self.model.translate(keypoints, mask, beam_width=self.beam_width)
+                    token_ids = self.model.translate(keypoints, mask, beam_width=self.beam_width,
+                                                        forced_bos_token_id=self.forced_bos_token_id)
                     for i in range(token_ids.shape[0]):
                         text = self.bart_tokenizer.decode(token_ids[i], skip_special_tokens=True)
                         all_trans_preds.append(text)
@@ -415,7 +417,7 @@ BEAM_WIDTHS = [1, 2, 4, 8, 16, 32]
 
 
 def run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
-                   bart_tokenizer, exp_name, use_ctc=True):
+                   bart_tokenizer, exp_name, use_ctc=True, forced_bos_token_id=None):
     """
     Evaluate best model at beam widths 1–32 on val and test splits.
     Logs a W&B Table (beam_sweep) and a per-metric line chart.
@@ -432,7 +434,7 @@ def run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
                 model, loader, tokenizer, device,
                 bart_tokenizer=bart_tokenizer,
                 decode_mode='beam', beam_width=bw,
-                use_ctc=use_ctc,
+                use_ctc=use_ctc, forced_bos_token_id=forced_bos_token_id,
             )
             m, _ = ev.evaluate(verbose=False)
             row = dict(
@@ -496,6 +498,8 @@ def main():
                         help='CTC loss weight (1.0=CTC only, 0.0=BART only)')
     parser.add_argument('--freeze_bart_epochs', type=int, default=5,
                         help='Epochs to freeze BART before joint training')
+    parser.add_argument('--forced_bos_token_id', type=int, default=None,
+                        help='Force decoder to start with this token (e.g. mBART language id for German)')
     
     # Experiment management
     parser.add_argument('--exp_name', type=str, default=None,
@@ -563,9 +567,9 @@ def main():
     
     bart_tokenizer = None
     if args.use_bart:
-        from transformers import BartTokenizer
-        bart_tokenizer = BartTokenizer.from_pretrained(args.bart_model)
-        print(f"  BART tokenizer: {args.bart_model}")
+        from transformers import AutoTokenizer
+        bart_tokenizer = AutoTokenizer.from_pretrained(args.bart_model)
+        print(f"  Seq2Seq tokenizer: {args.bart_model}")
     
     if args.dataset == 'phoenix':
         # Build gloss tokenizer from PHOENIX annotations
@@ -716,7 +720,7 @@ def main():
         model, val_loader, tokenizer, device,
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
-        use_ctc=use_ctc,
+        use_ctc=use_ctc, forced_bos_token_id=args.forced_bos_token_id,
     )
     val_metrics, val_data = val_evaluator.evaluate(verbose=False)
     val_evaluator.print_metrics(val_metrics)
@@ -739,7 +743,7 @@ def main():
         model, test_loader, tokenizer, device,
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
-        use_ctc=use_ctc,
+        use_ctc=use_ctc, forced_bos_token_id=args.forced_bos_token_id,
     )
     test_metrics, test_data = test_evaluator.evaluate(verbose=True)
     test_evaluator.print_metrics(test_metrics)
@@ -775,7 +779,8 @@ def main():
 
     # ─── Beam sweep (val + test) ───
     run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
-                   bart_tokenizer, exp_name, use_ctc=use_ctc)
+                   bart_tokenizer, exp_name, use_ctc=use_ctc,
+                   forced_bos_token_id=args.forced_bos_token_id)
 
     # ─── Save experiment artefacts ───
     save_experiment(args, exp_name, results_dir, models_dir,

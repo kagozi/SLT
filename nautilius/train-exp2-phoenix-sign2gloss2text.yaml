@@ -1,6 +1,7 @@
-# Experiment 2: PHOENIX-2014-T — Sign2Gloss2Text (joint CTC + BART)
-# 3-stage training: CTC-only → BART warmup → full joint.
-# Requires more memory due to BART-base (~500MB).
+# Experiment 2: PHOENIX-2014-T — Sign2Gloss2Text (joint CTC + mBART)
+# 3-stage training: CTC-only → mBART warmup → full joint.
+# Uses facebook/mbart-large-cc25 with forced_bos_token_id=250003 (de_DE)
+# to generate German translations. Requires more memory (~2.5GB for mBART).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -38,6 +39,10 @@ spec:
           - "--num_workers"
           - "4"
           - "--use_bart"
+          - "--bart_model"
+          - "facebook/mbart-large-cc25"
+          - "--forced_bos_token_id"
+          - "250003"
           - "--ctc_weight"
           - "0.5"
           - "--freeze_bart_epochs"

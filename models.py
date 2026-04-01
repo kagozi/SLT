@@ -112,11 +112,11 @@ class PositionalEncoding(nn.Module):
 # ─── BART Translation Head ──────────────────────────────────────────
 
 class BARTTranslationHead(nn.Module):
-    """BART-based Gloss→Text translation head."""
+    """Seq2Seq translation head (BART, mBART, Marian, etc.)."""
     def __init__(self, encoder_dim, bart_model="facebook/bart-base", max_len=128):
         super().__init__()
-        from transformers import BartForConditionalGeneration
-        self.bart = BartForConditionalGeneration.from_pretrained(bart_model)
+        from transformers import AutoModelForSeq2SeqLM
+        self.bart = AutoModelForSeq2SeqLM.from_pretrained(bart_model)
         bart_dim = self.bart.config.d_model
         self.encoder_proj = nn.Sequential(
             nn.Linear(encoder_dim, bart_dim),
@@ -144,12 +144,16 @@ class BARTTranslationHead(nn.Module):
         return {"loss": outputs.loss, "logits": outputs.logits}
 
     def generate(self, encoder_hidden, encoder_mask=None,
-                 beam_width=5, max_len=None, length_penalty=1.0):
+                 beam_width=5, max_len=None, length_penalty=1.0,
+                 forced_bos_token_id=None):
         encoder_out = self._project(encoder_hidden)
-        return self.bart.generate(
+        kwargs = dict(
             encoder_outputs=encoder_out, attention_mask=encoder_mask,
             max_length=max_len or self.max_len, num_beams=beam_width,
             length_penalty=length_penalty, early_stopping=True)
+        if forced_bos_token_id is not None:
+            kwargs['forced_bos_token_id'] = forced_bos_token_id
+        return self.bart.generate(**kwargs)
 
     def freeze(self):
         """Freeze BART AND encoder_proj — no BART gradients touch encoder."""
@@ -244,14 +248,16 @@ class SignLanguageTransformer(nn.Module):
         return output
 
     @torch.no_grad()
-    def translate(self, x, mask=None, beam_width=5, length_penalty=1.0):
+    def translate(self, x, mask=None, beam_width=5, length_penalty=1.0,
+                  forced_bos_token_id=None):
         self.eval()
         hidden, mask = self.encode(x, mask)
         if self.translation_head is None:
             return None
         return self.translation_head.generate(hidden, mask,
                                                beam_width=beam_width,
-                                               length_penalty=length_penalty)
+                                               length_penalty=length_penalty,
+                                               forced_bos_token_id=forced_bos_token_id)
 
     def freeze_translation(self):
         if self.translation_head: self.translation_head.freeze()

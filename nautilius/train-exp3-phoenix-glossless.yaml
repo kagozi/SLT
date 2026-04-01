@@ -1,5 +1,6 @@
-# Experiment 3: PHOENIX-2014-T — Glossless Sign2Text (BART only, ctc_weight=0)
-# No gloss supervision. Encoder feeds directly into BART decoder.
+# Experiment 3: PHOENIX-2014-T — Glossless Sign2Text (mBART only, ctc_weight=0)
+# No gloss supervision. Encoder feeds directly into mBART decoder.
+# Uses facebook/mbart-large-cc25 with forced_bos_token_id=250003 (de_DE).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -37,6 +38,10 @@ spec:
           - "--num_workers"
           - "4"
           - "--use_bart"
+          - "--bart_model"
+          - "facebook/mbart-large-cc25"
+          - "--forced_bos_token_id"
+          - "250003"
           - "--ctc_weight"
           - "0.0"
           - "--freeze_bart_epochs"
