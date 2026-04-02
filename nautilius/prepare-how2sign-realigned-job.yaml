@@ -1,0 +1,54 @@
+# Prepare How2Sign with manually re-aligned clips
+#
+# Pipeline:
+#   1. Download re-aligned annotation CSVs (tiny)
+#   2. Download full Green Screen RGB frontal videos (train: 10 split parts,
+#      val + test: single zip each) via gdown from Google Drive
+#   3. Re-segment per-sentence clips with ffmpeg at re-aligned timestamps
+#   4. Delete full videos to reclaim ~50-80 GB
+#   5. Wipe stale MediaPipe keypoints cache
+#   6. Re-run preextract_keypoints_how2sign.py on new clips
+#
+# Expected PVC space: 146 GB free  (500 GB total, ~355 GB used).
+# Peak usage during train download: ~2 × train_video_size (progressive cat).
+# After completion: only new clips (~35 GB) + new keypoints (~17 GB) remain.
+#
+# No GPU needed — MediaPipe runs on CPU.
+# Runtime estimate: ~4-8 hours (download + 31 K ffmpeg cuts + MediaPipe).
+#
+# To deploy:
+#   kubectl apply -f nautilius/prepare-how2sign-realigned-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prepare-how2sign-realigned
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 0          # do NOT retry — download is stateful; fix and redeploy
+  ttlSecondsAfterFinished: 604800   # keep pod logs for 7 days
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: preparer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "prepare_how2sign_realigned.py"]
+        args:
+          - "--max_frames"
+          - "300"
+          - "--tmp_dir"
+          - "/data/how2sign_tmp"
+        resources:
+          requests:
+            cpu: "8"
+            memory: "16Gi"
+          limits:
+            cpu: "8"
+            memory: "16Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
