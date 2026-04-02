@@ -57,16 +57,20 @@ KPS_DIR     = ROOT / 'keypoints'
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def run(cmd, **kw):
-    print(f'  $ {cmd}')
+    print(f'  $ {cmd}', flush=True)
     subprocess.run(cmd, shell=True, check=True, **kw)
 
 
 def gdown_file(file_id: str, out_path: Path) -> None:
-    """Download a single Google Drive file with gdown."""
+    """Download a single Google Drive file with gdown (no --fuzzy with --id)."""
     if out_path.exists():
-        print(f'  already exists: {out_path.name}')
+        print(f'  already exists: {out_path.name}', flush=True)
         return
-    run(f'gdown --id {file_id} -O "{out_path}" --fuzzy')
+    # Use Python gdown API directly — more reliable than CLI for large files
+    import gdown
+    url = f'https://drive.google.com/uc?id={file_id}'
+    print(f'  gdown {url} → {out_path.name}', flush=True)
+    gdown.download(url, str(out_path), quiet=False, fuzzy=False)
 
 
 def df_space_gb(path: Path) -> float:
@@ -286,12 +290,9 @@ def main():
     tmp.mkdir(parents=True, exist_ok=True)
     ANNO_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Install gdown if missing
-    try:
-        import gdown  # noqa: F401
-    except ImportError:
-        print('Installing gdown ...')
-        run('pip install gdown -q')
+    # Install / upgrade gdown
+    print('Installing/upgrading gdown ...', flush=True)
+    run('pip install --upgrade gdown -q')
 
     print(f'\nPVC free space at start: {df_space_gb(Path("/data")):.1f} GB')
 
