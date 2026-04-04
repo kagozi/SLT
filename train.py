@@ -40,6 +40,7 @@ How2Sign experiments:
 """
 
 import io
+import re
 import time
 import argparse
 import pandas as pd
@@ -69,7 +70,7 @@ def _fig_to_wandb(fig) -> wandb.Image:
 
 from dataset import PhoenixSignDataset
 from dataset_how2sign import How2SignDataset
-from models import SignLanguageTransformer
+from models import SignLanguageTransformer, MultiStreamSignLanguageTransformer
 from utils import GlossTokenizer, Trainer, collate_fn, ctc_greedy_decode, ctc_beam_decode
 
 
@@ -222,26 +223,26 @@ class SignLanguageEvaluator:
             return d[len(tw), len(pw)] / mc if mc > 0 else 0.0
         return float(np.mean([wer_single(p, t) for p, t in zip(preds, targets)]))
 
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Lowercase, remove punctuation, collapse whitespace."""
+        text = text.lower()
+        text = re.sub(r"[^\w\s']", ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
     def _compute_bleu(self, preds, targets, max_n=4):
-        def ngrams(tokens, n):
-            return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
-        scores = {}
-        for n in range(1, max_n+1):
-            prec_sum, count = 0, 0
-            for p, t in zip(preds, targets):
-                pt, tt = p.split(), t.split()
-                if len(pt) < n or len(tt) < n: continue
-                pn, tn = Counter(ngrams(pt, n)), Counter(ngrams(tt, n))
-                matches = sum((pn & tn).values())
-                total = sum(pn.values())
-                if total > 0:
-                    prec_sum += matches / total
-                    count += 1
-            scores[f'BLEU-{n}'] = prec_sum / count if count > 0 else 0.0
-        if all(v > 0 for v in scores.values()):
-            scores['BLEU'] = math.exp(sum(math.log(v) for v in scores.values()) / len(scores))
-        else:
-            scores['BLEU'] = 0.0
+        """sacrebleu corpus BLEU with standard 13a tokenization + lowercase.
+        Returns scores in [0, 1] range to match the rest of the codebase."""
+        from sacrebleu.metrics import BLEU
+        bleu = BLEU(tokenize='13a', lowercase=True)
+        result = bleu.corpus_score(preds, [targets])
+        scores = {
+            'BLEU-1': result.precisions[0] / 100,
+            'BLEU-2': result.precisions[1] / 100,
+            'BLEU-4': result.precisions[3] / 100,
+            'BLEU':   result.score         / 100,
+        }
         return scores
 
     def print_metrics(self, metrics):
@@ -500,6 +501,14 @@ def main():
                         help='Epochs to freeze BART before joint training')
     parser.add_argument('--forced_bos_token_id', type=int, default=None,
                         help='Force decoder to start with this token (e.g. mBART language id for German)')
+    parser.add_argument('--ffn_expand', type=int, default=4,
+                        help='FFN hidden expansion factor in transformer blocks (default 4)')
+    parser.add_argument('--label_smoothing', type=float, default=0.1,
+                        help='Label smoothing for translation cross-entropy (default 0.1)')
+    parser.add_argument('--grad_accum', type=int, default=1,
+                        help='Gradient accumulation steps (effective_batch = batch_size * grad_accum)')
+    parser.add_argument('--fp16', action='store_true',
+                        help='Enable mixed-precision (fp16) training via PyTorch AMP')
     
     # Experiment management
     parser.add_argument('--exp_name', type=str, default=None,
@@ -520,7 +529,29 @@ def main():
     parser.add_argument('--subset_pct', type=float, default=100.0,
                         help='Percentage of training data to use (1-100). '
                              'Used for low-data adaptation experiments.')
-    
+
+    # ── Enhanced training (Phase 1-3 improvements) ───────────────────
+    parser.add_argument('--use_motion', action='store_true',
+                        help='Append frame-difference (velocity) features to keypoints '
+                             'before input projection. Doubles input_dim. '
+                             'Ignored for --multistream (motion always on per-stream).')
+    parser.add_argument('--multistream', action='store_true',
+                        help='Use MultiStreamSignLanguageTransformer: separate '
+                             'pose/hand/face streams with cross-attention fusion. '
+                             'Always includes per-stream velocity features.')
+    parser.add_argument('--contrastive_weight', type=float, default=0.0,
+                        help='Weight for NT-Xent contrastive loss on encoder '
+                             'representations (two augmented views per batch). '
+                             '0=disabled. Recommended: 0.1')
+    parser.add_argument('--rdrop_weight', type=float, default=0.0,
+                        help='Weight for R-Drop symmetric KL regularisation on '
+                             'CTC logits (two forward passes per batch). '
+                             '0=disabled. Recommended: 5.0 for CTC+BART exps '
+                             '(Liang et al., NeurIPS 2021).')
+    parser.add_argument('--ctc_smoothing', type=float, default=0.1,
+                        help='Uniform label smoothing on CTC loss (default 0.1). '
+                             'Set 0.0 to disable.')
+
     args = parser.parse_args()
     
     torch.manual_seed(args.seed)
@@ -639,7 +670,7 @@ def main():
                               pin_memory=True)
     
     # ─── Model ───
-    model = SignLanguageTransformer(
+    _model_kwargs = dict(
         input_dim=input_dim, dim=args.dim,
         num_classes=tokenizer.vocab_size,
         max_frames=args.max_frames * 2,
@@ -647,7 +678,17 @@ def main():
         use_bart=args.use_bart,
         bart_model=args.bart_model,
         ctc_weight=args.ctc_weight,
+        ffn_expand=args.ffn_expand,
+        label_smoothing=args.label_smoothing,
     )
+    if args.multistream:
+        # Multi-stream encoder always computes per-stream velocity; use_motion ignored
+        model = MultiStreamSignLanguageTransformer(**_model_kwargs)
+        print("  🔀 Encoder: MultiStream (pose/lhand/rhand/face + per-stream velocity)")
+    else:
+        model = SignLanguageTransformer(use_motion=args.use_motion, **_model_kwargs)
+        motion_tag = " + velocity" if args.use_motion else ""
+        print(f"  🔀 Encoder: Flat 225-d{motion_tag}")
     
     # ── Load pretrained encoder (transfer learning) ──
     if args.pretrained_path and args.pretrained_path.lower() != 'none':
@@ -699,6 +740,11 @@ def main():
             ctc_weight=args.ctc_weight,
             freeze_bart_epochs=args.freeze_bart_epochs,
             models_dir=models_dir,
+            grad_accum=args.grad_accum,
+            fp16=args.fp16,
+            contrastive_weight=args.contrastive_weight,
+            rdrop_weight=args.rdrop_weight,
+            ctc_smoothing=args.ctc_smoothing,
         )
         print(f"\n🏋️ Training for {args.epochs} epochs...")
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,

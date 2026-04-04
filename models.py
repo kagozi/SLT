@@ -109,15 +109,76 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1)]
 
 
+# ─── Contrastive Loss ────────────────────────────────────────────────
+
+class SignContrastiveLoss(nn.Module):
+    """NT-Xent (InfoNCE) contrastive loss on pooled encoder representations.
+
+    Two independently augmented views of the same batch are treated as
+    positive pairs; all other within-batch pairs are negatives.  A 2-layer
+    MLP projection head (following SimCLR best practice) maps pooled encoder
+    hiddens to the contrastive space before computing the loss.
+
+    Usage in training:
+        aug1 = augment_keypoints(keypoints, mask)
+        aug2 = augment_keypoints(keypoints, mask)
+        h1, m1 = model.encode(aug1, mask.clone())
+        h2, m2 = model.encode(aug2, mask.clone())
+        loss += contrastive_weight * contrastive_head(h1, m1, h2, m2)
+
+    References:
+        SimCLR    – Chen et al., ICML 2020
+        SignCL    – Min et al., ACL 2024
+        MSKA      – Wang et al., arXiv 2405.05672
+    """
+    def __init__(self, encoder_dim: int, proj_dim: int = 128, temperature: float = 0.07):
+        super().__init__()
+        self.proj = nn.Sequential(
+            nn.Linear(encoder_dim, encoder_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(encoder_dim, proj_dim),
+        )
+        self.temperature = temperature
+
+    def _pool(self, hidden: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """Masked mean-pool encoder hiddens → (B, encoder_dim)."""
+        denom = mask.sum(dim=1, keepdim=True).clamp(min=1)
+        return (hidden * mask.unsqueeze(-1)).sum(dim=1) / denom
+
+    def forward(
+        self,
+        h1: torch.Tensor, m1: torch.Tensor,
+        h2: torch.Tensor, m2: torch.Tensor,
+    ) -> torch.Tensor:
+        z1 = F.normalize(self.proj(self._pool(h1, m1)), dim=-1)   # (B, proj_dim)
+        z2 = F.normalize(self.proj(self._pool(h2, m2)), dim=-1)
+        B  = z1.size(0)
+        z  = torch.cat([z1, z2], dim=0)                            # (2B, proj_dim)
+        sim = (z @ z.T) / self.temperature                         # (2B, 2B)
+        sim.fill_diagonal_(float('-inf'))                          # mask self-similarity
+        # positive for z1[i] is z2[i] = row i+B, and vice-versa
+        labels = torch.cat([
+            torch.arange(B, 2 * B, device=z.device),
+            torch.arange(B,        device=z.device),
+        ])
+        return F.cross_entropy(sim, labels)
+
+
 # ─── BART Translation Head ──────────────────────────────────────────
 
 class BARTTranslationHead(nn.Module):
     """Seq2Seq translation head (BART, mBART, Marian, etc.)."""
-    def __init__(self, encoder_dim, bart_model="facebook/bart-base", max_len=128):
+    def __init__(self, encoder_dim, bart_model="facebook/bart-base", max_len=128,
+                 label_smoothing=0.1):
         super().__init__()
         from transformers import AutoModelForSeq2SeqLM
         self.bart = AutoModelForSeq2SeqLM.from_pretrained(bart_model)
+        self.bart.gradient_checkpointing_enable()
         bart_dim = self.bart.config.d_model
+        # Freeze BART's internal encoder — we always pass encoder_outputs directly
+        # so it is never called. Freezing it saves ~50% of BART optimizer state.
+        for p in self.bart.model.encoder.parameters():
+            p.requires_grad = False
         self.encoder_proj = nn.Sequential(
             nn.Linear(encoder_dim, bart_dim),
             nn.LayerNorm(bart_dim),
@@ -127,6 +188,7 @@ class BARTTranslationHead(nn.Module):
         )
         self.max_len = max_len
         self._frozen = False
+        self.label_smoothing = label_smoothing
 
     def _project(self, encoder_hidden):
         """Project encoder hidden states and wrap for HuggingFace."""
@@ -141,7 +203,16 @@ class BARTTranslationHead(nn.Module):
         encoder_out = self._project(encoder_hidden)
         outputs = self.bart(encoder_outputs=encoder_out,
                             attention_mask=encoder_mask, labels=labels)
-        return {"loss": outputs.loss, "logits": outputs.logits}
+        loss = outputs.loss
+        # Apply label smoothing on top of BART's cross-entropy
+        if loss is not None and self.label_smoothing > 0 and labels is not None:
+            vocab_size = outputs.logits.size(-1)
+            log_probs  = F.log_softmax(outputs.logits, dim=-1)
+            pad_mask   = labels != -100
+            smooth_loss = -log_probs.sum(dim=-1) / vocab_size
+            loss = (1 - self.label_smoothing) * loss + \
+                   self.label_smoothing * smooth_loss[pad_mask].mean()
+        return {"loss": loss, "logits": outputs.logits}
 
     def generate(self, encoder_hidden, encoder_mask=None,
                  beam_width=5, max_len=None, length_penalty=1.0,
@@ -162,10 +233,13 @@ class BARTTranslationHead(nn.Module):
         for p in self.encoder_proj.parameters(): p.requires_grad = False
     
     def unfreeze(self):
-        """Unfreeze everything for joint fine-tuning."""
+        """Unfreeze BART decoder + encoder_proj for joint fine-tuning.
+        BART's internal encoder stays frozen — it is never called since we
+        always pass encoder_outputs directly."""
         self._frozen = False
-        for p in self.bart.parameters(): p.requires_grad = True
-        for p in self.encoder_proj.parameters(): p.requires_grad = True
+        for p in self.bart.model.decoder.parameters(): p.requires_grad = True
+        for p in self.bart.lm_head.parameters():       p.requires_grad = True
+        for p in self.encoder_proj.parameters():       p.requires_grad = True
 
 
 # ─── Main Model ──────────────────────────────────────────────────────
@@ -180,15 +254,17 @@ class SignLanguageTransformer(nn.Module):
     """
     def __init__(self, input_dim=225, dim=192, num_classes=1085, max_frames=500,
                  dropout=0.2, use_bart=False, bart_model="facebook/bart-base",
-                 ctc_weight=0.3):
+                 ctc_weight=0.3, ffn_expand=4, label_smoothing=0.1,
+                 use_motion=False):
         super().__init__()
-        self.use_bart = use_bart
+        self.use_bart   = use_bart
         self.ctc_weight = ctc_weight
-        self.dim = dim
+        self.dim        = dim
+        self.use_motion = use_motion
 
-        self.input_proj = nn.Linear(input_dim, dim, bias=False)
+        proj_in = input_dim * 2 if use_motion else input_dim
+        self.input_proj = nn.Linear(proj_in, dim, bias=False)
         self.pos_encoding = PositionalEncoding(dim, max_frames)
-        # self.bn = nn.BatchNorm1d(dim, momentum=0.95)
         self.norm = nn.LayerNorm(dim)
 
         self.conv_blocks = nn.ModuleList([
@@ -197,8 +273,7 @@ class SignLanguageTransformer(nn.Module):
             ConvBlock(dim, 3, dropout=dropout),
         ])
         self.transformer_blocks = nn.ModuleList([
-            # TransformerBlock(dim, num_heads=4, expand=2, dropout=dropout)
-            TransformerBlock(dim, num_heads=8, expand=2, dropout=dropout)
+            TransformerBlock(dim, num_heads=8, expand=ffn_expand, dropout=dropout)
             for _ in range(4)
         ])
 
@@ -212,18 +287,28 @@ class SignLanguageTransformer(nn.Module):
         self.translation_head = None
         if use_bart:
             self.translation_head = BARTTranslationHead(
-                encoder_dim=dim, bart_model=bart_model)
+                encoder_dim=dim, bart_model=bart_model,
+                label_smoothing=label_smoothing)
 
     def encode(self, x, mask=None):
-        """Encode keypoints → hidden states (B, T, dim)."""
+        """Encode keypoints → hidden states (B, T, dim).
+
+        When use_motion=True, velocity features (frame differences) are
+        concatenated to the raw keypoints before the input projection,
+        giving the model explicit access to motion information that is
+        otherwise only implicitly available through temporal convolutions.
+        This follows the temporal difference stream approach in TwoStream-SLR
+        (Zuo et al., NeurIPS 2022).
+        """
         if mask is None:
             mask = (x.abs().sum(dim=-1) != 0).float()
+        if self.use_motion:
+            vel = torch.zeros_like(x)
+            vel[:, 1:] = x[:, 1:] - x[:, :-1]
+            x = torch.cat([x, vel], dim=-1)   # (B, T, input_dim*2)
         x = self.input_proj(x)
-        # x = x.transpose(1, 2); x = self.bn(x); x = x.transpose(1, 2)
         x = self.norm(x)
         x = self.pos_encoding(x)
-
-        
         for blk in self.conv_blocks:
             x, mask = blk(x, mask)
         for blk in self.transformer_blocks:
@@ -317,13 +402,15 @@ class LanguageAwareSignTransformer(SignLanguageTransformer):
     def __init__(self, input_dim=225, dim=256,
                  num_classes_phoenix=1085, num_classes_how2sign=2048,
                  max_frames=500, dropout=0.3,
-                 use_bart=False, bart_model='facebook/bart-base', ctc_weight=0.3):
+                 use_bart=False, bart_model='facebook/bart-base', ctc_weight=0.3,
+                 use_motion=False):
         # Build the shared encoder (num_classes is a dummy; we replace head below)
         super().__init__(
             input_dim=input_dim, dim=dim,
             num_classes=num_classes_phoenix,   # head_phoenix
             max_frames=max_frames, dropout=dropout,
             use_bart=use_bart, bart_model=bart_model, ctc_weight=ctc_weight,
+            use_motion=use_motion,
         )
         # Language embedding: 0=PHOENIX(DGS), 1=How2Sign(ASL)
         self.lang_embedding = nn.Embedding(2, dim)
@@ -341,6 +428,10 @@ class LanguageAwareSignTransformer(SignLanguageTransformer):
         """Encode with optional language embedding injection."""
         if mask is None:
             mask = (x.abs().sum(dim=-1) != 0).float()
+        if self.use_motion:
+            vel = torch.zeros_like(x)
+            vel[:, 1:] = x[:, 1:] - x[:, :-1]
+            x = torch.cat([x, vel], dim=-1)
         x = self.input_proj(x)
         x = self.norm(x)
         x = self.pos_encoding(x)
@@ -377,3 +468,164 @@ class LanguageAwareSignTransformer(SignLanguageTransformer):
             except Exception:
                 pass
         return output
+
+
+# ─── Multi-Stream Encoder ─────────────────────────────────────────────
+
+class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
+    """Multi-stream encoder: each body-part group is processed through its own
+    projection + ConvBlock stack before cross-stream attention fusion.
+
+    Temporal difference (velocity) features are always computed per-stream,
+    giving each stream explicit access to its own motion information.
+
+    Body-part feature slices (raw 225-d keypoints):
+        Pose:        x[...,   0: 39]   (13 joints × 3)
+        Left hand:   x[...,  39:102]   (21 joints × 3)
+        Right hand:  x[..., 102:165]   (21 joints × 3)
+        Face:        x[..., 165:225]   (20 joints × 3)
+
+    Per-stream input after velocity concat: pose=78, hand=126, face=120.
+    Each stream projects independently to dim; L and R hands share weights
+    since they encode structurally symmetric motion patterns.
+
+    Fusion: per-frame cross-stream multi-head attention (4 streams as tokens)
+    followed by mean-pool → (B, T, dim) → shared TransformerBlocks.
+
+    Architecture (MSKA / TwoStream-SLR inspired):
+        stream_i → proj_i(dim) → LN → ConvBlocks(×3)  ─┐
+                                                         ├→ MHA fusion → mean
+        stream_j → proj_j(dim) → LN → ConvBlocks(×3)  ─┘
+            ↓
+        pos_encoding → TransformerBlocks(×4) → CTC / BART heads
+
+    References:
+        MSKA          – Wang et al., arXiv 2405.05672
+        TwoStream-SLR – Zuo et al., NeurIPS 2022
+    """
+
+    _POSE_S  = slice(0,   39)
+    _LHAND_S = slice(39,  102)
+    _RHAND_S = slice(102, 165)
+    _FACE_S  = slice(165, 225)
+
+    def __init__(self, input_dim: int = 225, dim: int = 192,
+                 num_classes: int = 1085, max_frames: int = 500,
+                 dropout: float = 0.2, use_bart: bool = False,
+                 bart_model: str = 'facebook/bart-base',
+                 ctc_weight: float = 0.3, ffn_expand: int = 4,
+                 label_smoothing: float = 0.1,
+                 use_motion: bool = False):   # use_motion ignored; motion always on
+        # Bootstrap shared components (pos_encoding, transformer_blocks, head,
+        # translation_head) via parent with a dummy input_dim=1.
+        super().__init__(
+            input_dim=1, dim=dim, num_classes=num_classes,
+            max_frames=max_frames, dropout=dropout, use_bart=use_bart,
+            bart_model=bart_model, ctc_weight=ctc_weight,
+            ffn_expand=ffn_expand, label_smoothing=label_smoothing,
+            use_motion=False,   # velocity handled per-stream in encode()
+        )
+        # Remove flat-encoder components (replaced by per-stream equivalents)
+        del self.input_proj, self.norm, self.conv_blocks
+
+        # Per-stream input dims (raw features × 2 after velocity concat)
+        pose_d = 39 * 2    # 78
+        hand_d = 63 * 2    # 126  (L and R hands share this projection)
+        face_d = 60 * 2    # 120
+
+        # Stream projections + normalisation
+        self.proj_pose  = nn.Linear(pose_d, dim, bias=False)
+        self.proj_lhand = nn.Linear(hand_d, dim, bias=False)
+        self.proj_rhand = nn.Linear(hand_d, dim, bias=False)
+        self.proj_face  = nn.Linear(face_d, dim, bias=False)
+        self.norm_pose  = nn.LayerNorm(dim)
+        self.norm_lhand = nn.LayerNorm(dim)
+        self.norm_rhand = nn.LayerNorm(dim)
+        self.norm_face  = nn.LayerNorm(dim)
+
+        # Per-stream temporal ConvBlocks (same kernel schedule as flat encoder)
+        def _conv_stack():
+            return nn.ModuleList([
+                ConvBlock(dim, 11, dropout=dropout),
+                ConvBlock(dim, 5,  dropout=dropout),
+                ConvBlock(dim, 3,  dropout=dropout),
+            ])
+        self.conv_pose  = _conv_stack()
+        self.conv_lhand = _conv_stack()
+        self.conv_rhand = _conv_stack()
+        self.conv_face  = _conv_stack()
+
+        # Cross-stream attention fusion: 4 stream tokens per frame → 1
+        self.fusion_attn = nn.MultiheadAttention(
+            embed_dim=dim, num_heads=4, dropout=dropout, batch_first=True)
+        self.fusion_norm = nn.LayerNorm(dim)
+
+    # ── Internal helpers ─────────────────────────────────────────────
+
+    @staticmethod
+    def _add_velocity(feat: torch.Tensor) -> torch.Tensor:
+        """Concat frame-difference features: (B,T,D) → (B,T,2D)."""
+        vel = torch.zeros_like(feat)
+        vel[:, 1:] = feat[:, 1:] - feat[:, :-1]
+        return torch.cat([feat, vel], dim=-1)
+
+    def _encode_stream(self, raw, proj, norm, conv_blocks, mask):
+        x = norm(proj(self._add_velocity(raw)))
+        for blk in conv_blocks:
+            x, mask = blk(x, mask)
+        return x, mask
+
+    # ── Core encode (overrides flat version) ─────────────────────────
+
+    def encode(self, x: torch.Tensor,
+               mask: Optional[torch.Tensor] = None) -> tuple:
+        if mask is None:
+            mask = (x.abs().sum(dim=-1) != 0).float()
+
+        # Encode each body-part stream independently
+        s_pose,  m  = self._encode_stream(
+            x[..., self._POSE_S],  self.proj_pose,  self.norm_pose,  self.conv_pose,  mask.clone())
+        s_lhand, _  = self._encode_stream(
+            x[..., self._LHAND_S], self.proj_lhand, self.norm_lhand, self.conv_lhand, mask.clone())
+        s_rhand, _  = self._encode_stream(
+            x[..., self._RHAND_S], self.proj_rhand, self.norm_rhand, self.conv_rhand, mask.clone())
+        s_face,  _  = self._encode_stream(
+            x[..., self._FACE_S],  self.proj_face,  self.norm_face,  self.conv_face,  mask.clone())
+
+        # Cross-stream attention: treat 4 streams as a 4-token sequence per frame
+        B, T, D = s_pose.shape
+        flat = torch.stack([s_pose, s_lhand, s_rhand, s_face], dim=2)  # (B, T, 4, D)
+        flat = flat.reshape(B * T, 4, D)
+        attended, _ = self.fusion_attn(flat, flat, flat)
+        fused = self.fusion_norm(flat + attended).mean(dim=1)           # (B*T, D)
+        x = fused.reshape(B, T, D)
+
+        # Shared positional encoding + transformer blocks
+        x = self.pos_encoding(x)
+        for blk in self.transformer_blocks:
+            x, m = blk(x, m)
+        return x, m
+
+    # ── Freeze controls for multi-stream layout ───────────────────────
+
+    def freeze_encoder(self):
+        for mod in [
+            self.proj_pose, self.proj_lhand, self.proj_rhand, self.proj_face,
+            self.norm_pose, self.norm_lhand, self.norm_rhand, self.norm_face,
+            self.conv_pose, self.conv_lhand, self.conv_rhand, self.conv_face,
+            self.fusion_attn, self.fusion_norm, self.pos_encoding,
+        ] + list(self.transformer_blocks):
+            for p in mod.parameters():
+                p.requires_grad = False
+
+    def freeze_convblocks(self):
+        """Freeze per-stream projections, norms, convs, and fusion.
+        Transformer blocks remain trainable (ULMFiT-style)."""
+        for mod in [
+            self.proj_pose, self.proj_lhand, self.proj_rhand, self.proj_face,
+            self.norm_pose, self.norm_lhand, self.norm_rhand, self.norm_face,
+            self.conv_pose, self.conv_lhand, self.conv_rhand, self.conv_face,
+            self.fusion_attn, self.fusion_norm,
+        ]:
+            for p in mod.parameters():
+                p.requires_grad = False

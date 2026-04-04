@@ -1,0 +1,88 @@
+# Experiment 17: PHOENIX-2014-T — Multi-stream encoder
+# MultiStreamSignLanguageTransformer: 4 body-part streams (pose/lhand/rhand/face)
+# with per-stream velocity, separate ConvBlocks, cross-stream attention fusion,
+# then shared TransformerBlocks + CTC + mBART.
+# Contrastive loss (w=0.1) + R-Drop (w=5.0).
+# Expected: +2-4 BLEU over Exp 2; highest-ceiling single-change for PHOENIX.
+# Use results to decide freeze strategy for Exp 7-9 (transfer experiments).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp17-phoenix-multistream
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp17_phoenix_multistream"
+          - "--epochs"
+          - "200"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "2"
+          - "--grad_accum"
+          - "8"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--num_workers"
+          - "4"
+          - "--multistream"
+          - "--use_bart"
+          - "--bart_model"
+          - "facebook/mbart-large-cc25"
+          - "--forced_bos_token_id"
+          - "250003"
+          - "--ctc_weight"
+          - "0.5"
+          - "--freeze_bart_epochs"
+          - "20"
+          - "--ffn_expand"
+          - "4"
+          - "--label_smoothing"
+          - "0.1"
+          - "--contrastive_weight"
+          - "0.1"
+          - "--rdrop_weight"
+          - "5.0"
+          - "--ctc_smoothing"
+          - "0.1"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        resources:
+          requests:
+            cpu: "4"
+            memory: "40Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "40Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
