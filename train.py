@@ -572,6 +572,11 @@ def main():
     exp_name = get_experiment_name(args)
     results_dir, models_dir = setup_directories(exp_name, args.output_dir)
 
+    import os
+    # Tell W&B to delete local media files after they are uploaded, preventing
+    # the wandb/run-*/files/media/ tree from accumulating on the PVC.
+    os.environ.setdefault('WANDB_DELETE_LOCAL', '1')
+
     wandb.init(
         project="slt",
         name=exp_name,
@@ -582,6 +587,9 @@ def main():
             'subset_pct': args.subset_pct,
         },
         dir=str(results_dir),
+        # resume="allow" reuses an existing run dir on restart instead of
+        # creating a new one, keeping local wandb/ storage bounded.
+        resume="allow",
     )
 
     print(f"\n{'='*60}")

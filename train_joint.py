@@ -325,11 +325,6 @@ class JointTrainer:
                 if wandb.run:
                     wandb.log({'val/best_combined_loss': combined_loss}, step=epoch)
 
-            if epoch % 10 == 0:
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
-                }, self.models_dir / f'checkpoint_epoch_{epoch}.pt')
 
         self._plot_joint_curves()
 
@@ -403,10 +398,15 @@ def main():
     models_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    import os
+    os.environ.setdefault('WANDB_DELETE_LOCAL', '1')
+
     wandb.init(
         project='slt',
         name=args.exp_name,
         config={**vars(args), 'mode': 'joint_training'},
+        dir=str(results_dir),
+        resume="allow",
     )
 
     # ── Tokenizers ──

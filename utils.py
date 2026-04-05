@@ -603,6 +603,16 @@ class Trainer:
         return avg_loss, all_predictions, all_targets
 
     def train(self, num_epochs=100, decode_mode='greedy', beam_width=5):
+        # ── Disk space guard: abort early rather than crash mid-training ──────
+        import shutil as _shutil
+        disk = _shutil.disk_usage(self.models_dir)
+        free_gb = disk.free / 1e9
+        if free_gb < 20:
+            raise RuntimeError(
+                f"Insufficient disk space: {free_gb:.1f} GB free at "
+                f"{self.models_dir}. Need at least 20 GB. Free up space and retry.")
+        print(f"  Disk: {free_gb:.0f} GB free at {self.models_dir.parent.parent}")
+
         for epoch in range(num_epochs):
 
             metrics = self.train_epoch(epoch)
@@ -695,13 +705,6 @@ class Trainer:
                         'val/best_bleu4': val_bleu.get('BLEU-4', 0),
                     }, step=epoch)
 
-            if epoch % 10 == 0:
-                ckpt_path = self.models_dir / f'checkpoint_epoch_{epoch}.pt'
-                torch.save({
-                    'epoch':                epoch,
-                    'model_state_dict':     self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                }, ckpt_path)
 
         # ── Plot training curves at end of training ──
         self._plot_training_curves()
