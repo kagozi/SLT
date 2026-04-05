@@ -12,7 +12,7 @@ Writes:  PSEUDOGLOSS column back into the same CSV in-place.
 Logs 200 random samples per split to a W&B Table for manual review.
 
 Usage (local):
-    python generate_pseudoglosses_how2sign.py --root_dir /data/how2sign_rgb
+    python generate_pseudoglosses_how2sign.py --root_dir /data/how2sign_hf
 
 Usage (NRP job):
     kubectl apply -f nautilius/generate-pseudoglosses-job.yaml

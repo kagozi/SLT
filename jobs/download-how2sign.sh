@@ -2,7 +2,7 @@
 # DEPRECATED — Kaggle Holistic download script.
 #
 # How2Sign data is now sourced from the official RGB front clips,
-# manually uploaded to the NRP PVC at /data/how2sign_rgb/.
+# manually uploaded to the NRP PVC at /data/how2sign_hf/.
 #
 # Current data pipeline (Nautilus jobs):
 #   kubectl apply -f nautilius/extract-how2sign-rgb-job.yaml

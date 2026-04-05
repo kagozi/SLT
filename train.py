@@ -23,19 +23,19 @@ PHOENIX-2014-T experiments:
 How2Sign experiments:
   # Exp 4: How2Sign Glossless (BART-only, no pseudo-glosses)
   python train.py --dataset how2sign --exp_name exp4_how2sign_glossless \\
-      --root_dir /data/how2sign_rgb \\
+      --root_dir /data/how2sign_hf \\
       --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10 \\
       --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
 
   # Exp 5: How2Sign Sign2Gloss2Text (joint CTC + BART with pseudo-glosses)
   python train.py --dataset how2sign --exp_name exp5_how2sign_sign2gloss2text \\
-      --root_dir /data/how2sign_rgb \\
+      --root_dir /data/how2sign_hf \\
       --dim 256 --epochs 300 --max_frames 300 --decode beam --beam_width 10 \\
       --use_bart --ctc_weight 0.3 --freeze_bart_epochs 5
 
   # Exp 6: How2Sign Sign2Gloss (CTC-only, pseudo-glosses as labels)
   python train.py --dataset how2sign --exp_name exp6_how2sign_sign2gloss \\
-      --root_dir /data/how2sign_rgb \\
+      --root_dir /data/how2sign_hf \\
       --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10
 """
 
@@ -563,7 +563,7 @@ def main():
         if args.dataset == 'phoenix':
             args.root_dir = '/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T'
         else:
-            args.root_dir = '/data/how2sign_rgb'
+            args.root_dir = '/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features'
     
     if args.max_frames is None:
         args.max_frames = 250 if args.dataset == 'phoenix' else 300
@@ -612,17 +612,23 @@ def main():
         tokenizer = GlossTokenizer(all_gloss, min_freq=1)
     else:
         # How2Sign: build tokenizer from PSEUDOGLOSS column if present.
-        pseudo_csv = Path(args.root_dir) / 'annotations' / 'how2sign_train.csv'
+        # CSVs live in metadata/ inside the HF cache root.
+        meta_dir = Path(args.root_dir) / 'metadata'
+        for csv_name in ('how2sign_realigned_train.csv', 'how2sign_train.csv'):
+            pseudo_csv = meta_dir / csv_name
+            if pseudo_csv.exists():
+                break
         pseudo_glosses = []
         if pseudo_csv.exists():
             df_h2s = pd.read_csv(pseudo_csv, sep='\t')
+            df_h2s.columns = [c.strip() for c in df_h2s.columns]
             if 'PSEUDOGLOSS' in df_h2s.columns:
                 pseudo_glosses = df_h2s['PSEUDOGLOSS'].dropna().tolist()
         if pseudo_glosses:
             tokenizer = GlossTokenizer(pseudo_glosses, min_freq=2)
             print(f"  How2Sign pseudogloss tokenizer: {tokenizer.vocab_size} tokens")
         else:
-            print("  How2Sign: no PSEUDOGLOSS column found — using dummy tokenizer")
+            print("  How2Sign: no PSEUDOGLOSS column — using dummy tokenizer (glossless mode)")
             tokenizer = GlossTokenizer(["DUMMY"], min_freq=1)
     
     # ─── Datasets ───

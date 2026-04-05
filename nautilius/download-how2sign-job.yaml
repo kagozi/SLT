@@ -1,7 +1,7 @@
 # DEPRECATED — How2Sign Kaggle Holistic download.
 #
 # The project now uses the official How2Sign RGB front clips instead.
-# Data has been manually uploaded to the PVC at /data/how2sign_rgb/.
+# Data has been manually uploaded to the PVC at /data/how2sign_hf/.
 #
 # Current How2Sign pipeline (run in order):
 #   1. extract-how2sign-rgb-job.yaml        — unzip train/val/test clips

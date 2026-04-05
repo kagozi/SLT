@@ -12,7 +12,7 @@ Usage (NRP job):
 Usage (local):
     python analyze_datasets.py \
         --phoenix_dir /data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \
-        --how2sign_dir /data/how2sign_rgb
+        --how2sign_dir /data/how2sign_hf
 """
 
 import argparse
@@ -432,7 +432,7 @@ def main():
     parser.add_argument('--phoenix_dir',  type=str, default=None,
                         help='Root of PHOENIX-2014-T (contains annotations/ and features/)')
     parser.add_argument('--how2sign_dir', type=str, default=None,
-                        help='Root of how2sign_rgb (contains annotations/ keypoints/ train/ val/ test/)')
+                        help='Root of how2sign_hf (contains annotations/ keypoints/ train/ val/ test/)')
     parser.add_argument('--n_samples',   type=int, default=20,
                         help='Visual samples per split (default: 20)')
     args = parser.parse_args()

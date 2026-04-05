@@ -23,7 +23,7 @@ spec:
           - "--dataset"
           - "how2sign"
           - "--root_dir"
-          - "/data/how2sign_hf"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"

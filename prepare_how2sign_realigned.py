@@ -11,7 +11,7 @@ Pipeline:
   5. Wipe stale keypoints cache
   6. Re-run MediaPipe extraction on new clips
 
-All output goes to /data/how2sign_rgb (same root the training pipeline uses).
+All output goes to /data/how2sign_hf (same root the training pipeline uses).
 """
 
 import argparse
@@ -48,7 +48,7 @@ FULL_VIDEO_IDS = {
     'test': ('1z0i6BBGHQ12ChY63hZH56QnczvQ0JfTb', 'test_raw.zip'),
 }
 
-ROOT        = Path('/data/how2sign_rgb')
+ROOT        = Path('/data/how2sign_hf')
 FULL_VIDEOS = Path('/data/how2sign_full_videos')   # temp; deleted after re-segmentation
 ANNO_DIR    = ROOT / 'annotations'
 KPS_DIR     = ROOT / 'keypoints'

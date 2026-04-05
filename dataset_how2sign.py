@@ -1,8 +1,9 @@
 """
 How2Sign Dataset loader.
 
-Loads raw (T, 543, 3) MediaPipe Holistic keypoints and applies landmark
-selection + normalization on-the-fly, matching the PHOENIX pipeline exactly.
+Loads raw (T, 543, 3) MediaPipe Holistic keypoints directly from the
+HuggingFace How2Sign_Holistic cache and applies landmark selection +
+normalization on-the-fly, matching the PHOENIX pipeline exactly.
 
 Correct MediaPipe Holistic layout (543 landmarks):
     Pose        :   0 -  32  (33 landmarks)
@@ -17,16 +18,20 @@ Selected 75 landmarks -> 225 features:
     20 face  x 3 =  60
     total: 75 joints x 3 = 225
 
-Expected layout on the PVC:
-    <root_dir>/
-        annotations/
-            how2sign_train.csv
-            how2sign_val.csv
-            how2sign_test.csv
-        raw/
-            train/{SENTENCE_NAME}.npy   (T, 543, 3) float32
-            val/
-            test/
+Expected layout on the PVC (HF cache, no pre-processing needed):
+    <root_dir>/                    # e.g. /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features
+        metadata/
+            how2sign_realigned_train.csv   (preferred)
+            how2sign_realigned_val.csv
+            how2sign_realigned_test.csv
+            how2sign_train.csv             (fallback)
+            ...
+        train/frontal/{SENTENCE_NAME}_holistic.npy   (T, 543, 3) float32
+        val/frontal/
+        test/frontal/
+
+CSV columns expected: VIDEO_ID, VIDEO_NAME, SENTENCE_ID, SENTENCE_NAME,
+                      START_REALIGNED, END_REALIGNED, SENTENCE
 """
 
 import random
@@ -187,19 +192,26 @@ class How2SignDataset(Dataset):
         self.tokenizer      = tokenizer
         self.bart_tokenizer = bart_tokenizer
 
-        csv_path = self.root_dir / 'annotations' / f'how2sign_{split}.csv'
+        # ── CSV: prefer realigned, fallback to plain ──────────────────────────
+        meta_dir = self.root_dir / 'metadata'
+        csv_path = meta_dir / f'how2sign_realigned_{split}.csv'
         if not csv_path.exists():
-            raise FileNotFoundError(f"Annotations CSV not found: {csv_path}")
+            csv_path = meta_dir / f'how2sign_{split}.csv'
+        if not csv_path.exists():
+            raise FileNotFoundError(
+                f"Annotations CSV not found (tried realigned and plain) in {meta_dir}")
 
         df = pd.read_csv(csv_path, sep='\t')
+        df.columns = [c.strip() for c in df.columns]
 
-        raw_dir = self.root_dir / 'raw' / split
+        # ── NPY files: {split}/frontal/{SENTENCE_NAME}_holistic.npy ──────────
+        frontal_dir = self.root_dir / split / 'frontal'
 
         self.samples = []
         missing = 0
         for _, row in df.iterrows():
-            sentence_name = str(row['SENTENCE_NAME'])
-            npy_path = raw_dir / f"{sentence_name}.npy"
+            sentence_name = str(row['SENTENCE_NAME']).strip()
+            npy_path = frontal_dir / f"{sentence_name}_holistic.npy"
 
             if not npy_path.exists():
                 missing += 1
@@ -209,8 +221,8 @@ class How2SignDataset(Dataset):
                 'npy_path':      npy_path,
                 'sentence_name': sentence_name,
                 'sentence':      str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
-                'pseudogloss':   str(row['PSEUDOGLOSS'])
-                                 if 'PSEUDOGLOSS' in row and pd.notna(row['PSEUDOGLOSS'])
+                'pseudogloss':   str(row.get('PSEUDOGLOSS', ''))
+                                 if pd.notna(row.get('PSEUDOGLOSS', float('nan')))
                                  else "",
             })
 
