@@ -1,0 +1,45 @@
+# Visualise PHOENIX-2014-T samples: raw frames + keypoint skeletons side by side.
+# Output saved to /data/experiments/figures/ as PNG + PDF (manuscript-ready).
+# Adjust --sequences to target specific signing sequences by name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: visualize-phoenix
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: visualizer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "visualize_phoenix.py"]
+        args:
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--split"
+          - "dev"
+          - "--output_dir"
+          - "/data/experiments/figures"
+          - "--n_sequences"
+          - "3"
+          - "--n_frames"
+          - "5"
+          - "--dpi"
+          - "250"
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+          limits:
+            cpu: "2"
+            memory: "8Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
