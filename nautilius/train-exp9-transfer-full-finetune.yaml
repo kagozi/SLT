@@ -21,7 +21,7 @@ spec:
           - "--dataset"
           - "how2sign"
           - "--root_dir"
-          - "/data/how2sign_rgb"
+          - "/data/how2sign_hf"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"

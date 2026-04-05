@@ -32,7 +32,10 @@ spec:
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "16"
+          - "4"
+          - "--grad_accum"
+          - "4"
+          - "--fp16"
           - "--dim"
           - "256"
           - "--num_workers"
@@ -46,6 +49,10 @@ spec:
           - "0.0"
           - "--freeze_bart_epochs"
           - "0"
+          - "--ffn_expand"
+          - "4"
+          - "--label_smoothing"
+          - "0.1"
         env:
         - name: WANDB_API_KEY
           valueFrom:

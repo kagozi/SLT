@@ -1,0 +1,61 @@
+# Convert PSewmuthu/How2Sign_Holistic (HuggingFace, 33.8 GB) to 225-dim keypoints.
+#
+# Output goes to /data/how2sign_hf — separate from /data/how2sign_rgb (auto-segmented)
+# so both datasets coexist and can be used for parallel experiments.
+#
+# Pipeline:
+#   1. Download How2Sign_Holistic dataset from HuggingFace (~33.8 GB)
+#      - Raw MediaPipe Holistic npy arrays (T, 543, 3) + re-aligned CSVs
+#   2. Convert each clip: extract pose+hands+face subset, apply
+#      wrist-relative / neck-norm → (max_frames, 225) float32
+#   3. Write re-aligned annotation CSVs with PSEUDOGLOSS column
+#
+# Directory layout after completion:
+#   /data/how2sign_hf/
+#       annotations/how2sign_{train,val,test}.csv   (re-aligned, with PSEUDOGLOSS)
+#       keypoints/{train,val,test}/{SENTENCE_NAME}.npy   (300, 225) float32
+#
+# No GPU needed. Runtime estimate: ~1-2 hours (download + ~31K conversions).
+#
+# To deploy:
+#   kubectl apply -f nautilius/convert-holistic-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: convert-holistic-features
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 604800   # keep pod logs for 7 days
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: converter
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "convert_holistic_features.py"]
+        args:
+          - "--hf_cache"
+          - "/data/hf_cache/How2Sign_Holistic"
+          - "--out_dir"
+          - "/data/how2sign_hf"
+          - "--extract_tmp"
+          - "/data/how2sign_hf_extract"
+          - "--splits"
+          - "train"
+          - "val"
+          - "test"
+        resources:
+          requests:
+            cpu: "8"
+            memory: "16Gi"
+          limits:
+            cpu: "8"
+            memory: "16Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
