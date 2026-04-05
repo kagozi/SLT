@@ -1,14 +1,7 @@
-# Extracts How2Sign RGB clip zips into split subdirectories.
-# Expects the following layout already on the PVC:
-#   /data/how2sign_hf/train_rgb_front_clips.zip
-#   /data/how2sign_hf/val_rgb_front_clips.zip
-#   /data/how2sign_hf/test_rgb_front_clips.zip
-#   /data/how2sign_hf/annotations/
-#
-# After completion:
-#   /data/how2sign_hf/train/   <- mp4 files
-#   /data/how2sign_hf/val/     <- mp4 files
-#   /data/how2sign_hf/test/    <- mp4 files
+# OBSOLETE: Raw holistic npy arrays are now read directly from:
+#   /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features/{split}/frontal/
+# No RGB extraction or MediaPipe re-extraction needed.
+# Kept for reference only — do not submit.
 apiVersion: batch/v1
 kind: Job
 metadata:

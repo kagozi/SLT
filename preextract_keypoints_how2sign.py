@@ -1,29 +1,16 @@
 """
 Pre-extract and cache keypoints for How2Sign RGB clips.
 
-Each CSV row defines a sentence segment within a full video clip via
-START / END timestamps (seconds).  We seek to the window, run MediaPipe
-Holistic on those frames, and save a (T, 225) .npy array keyed by
-SENTENCE_NAME.
+NOTE: This script is OBSOLETE. The training pipeline now reads raw
+(T, 543, 3) holistic npy arrays directly from the HF cache and applies
+normalization on-load in dataset_how2sign.py. No pre-extraction needed.
 
-Directory layout expected:
+Was used with:
     <root_dir>/
-        annotations/
-            how2sign_train.csv
-            how2sign_val.csv
-            how2sign_test.csv
-        train/   <-- mp4 files named {VIDEO_NAME}.mp4
-        val/
-        test/
+        annotations/how2sign_{split}.csv
+        train/{VIDEO_NAME}.mp4  ...
 
-Output (written next to the video splits):
-    <root_dir>/keypoints/{split}/{SENTENCE_NAME}.npy
-
-Usage:
-    python preextract_keypoints_how2sign.py \\
-        --root_dir /data/how2sign_hf \\
-        --max_frames 300 \\
-        --splits train val test
+Kept for reference only.
 """
 
 import argparse
@@ -108,7 +95,7 @@ def main():
         description='Pre-extract MediaPipe keypoints from How2Sign RGB clips.'
     )
     parser.add_argument('--root_dir', type=str, required=True,
-                        help='Path to how2sign_hf root directory')
+                        help='Path to HF holistic features root directory (OBSOLETE — not needed)')
     parser.add_argument('--max_frames', type=int, default=300,
                         help='Max frames per sentence (default: 300)')
     parser.add_argument('--splits', nargs='+', default=['train', 'val', 'test'])

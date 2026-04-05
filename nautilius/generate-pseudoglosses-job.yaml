@@ -1,7 +1,8 @@
 # Generates POS-based pseudoglosses for How2Sign using spaCy.
-# Writes a PSEUDOGLOSS column into annotations/how2sign_{split}.csv on the PVC.
-# Must run AFTER preextract-how2sign-keypoints job completes.
-# Must run BEFORE exp5 (How2Sign pseudogloss training). exp4 (glossless) does not need it.
+# NOTE: The realigned CSVs at metadata/how2sign_realigned_{split}.csv do not
+# have a PSEUDOGLOSS column. This job adds one. Only needed for exp5/exp6
+# (pseudogloss training). Glossless exps (exp4, exp16, exp18) do not need it.
+# Reads/writes: /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features/metadata/
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -19,7 +20,7 @@ spec:
         command: ["python", "generate_pseudoglosses_how2sign.py"]
         args:
           - "--root_dir"
-          - "/data/how2sign_hf"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--splits"
           - "train"
           - "val"

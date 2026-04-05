@@ -1,11 +1,7 @@
-# Pre-extracts MediaPipe Holistic keypoints from How2Sign RGB clips.
-# Each CSV sentence row is clipped to its START/END window before extraction.
-#
-# Reads from:  /data/how2sign_hf/{train,val,test}/*.mp4
-#              /data/how2sign_hf/annotations/how2sign_{split}.csv
-# Writes to:   /data/how2sign_hf/keypoints/{train,val,test}/{SENTENCE_NAME}.npy
-#
-# Run AFTER extract-how2sign-rgb job completes.
+# OBSOLETE: Raw holistic npy arrays are now read directly from:
+#   /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features/{split}/frontal/
+# Landmark selection + normalization happens on-load in dataset_how2sign.py.
+# Kept for reference only — do not submit.
 apiVersion: batch/v1
 kind: Job
 metadata:

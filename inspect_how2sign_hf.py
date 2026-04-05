@@ -1,9 +1,10 @@
 """
-Inspect /data/how2sign_hf and log dataset statistics + sample keypoint
-visualizations to Weights & Biases.
+Inspect How2Sign HF holistic features and log dataset statistics + sample
+keypoint visualizations to Weights & Biases.
 
 Run:
-    python inspect_how2sign_hf.py --root_dir /data/how2sign_hf
+    python inspect_how2sign_hf.py \
+        --root_dir /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features
 """
 
 import argparse
@@ -124,7 +125,8 @@ def make_hist_fig(frame_lens: list, split: str) -> plt.Figure:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--root_dir',   type=str, default='/data/how2sign_hf')
+    parser.add_argument('--root_dir', type=str,
+                        default='/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features')
     parser.add_argument('--wandb_proj', type=str, default='slt-how2sign')
     parser.add_argument('--n_samples',  type=int, default=5)
     args = parser.parse_args()

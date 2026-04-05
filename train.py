@@ -23,19 +23,19 @@ PHOENIX-2014-T experiments:
 How2Sign experiments:
   # Exp 4: How2Sign Glossless (BART-only, no pseudo-glosses)
   python train.py --dataset how2sign --exp_name exp4_how2sign_glossless \\
-      --root_dir /data/how2sign_hf \\
+      --root_dir /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features \\
       --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10 \\
       --use_bart --ctc_weight 0.0 --freeze_bart_epochs 0
 
   # Exp 5: How2Sign Sign2Gloss2Text (joint CTC + BART with pseudo-glosses)
   python train.py --dataset how2sign --exp_name exp5_how2sign_sign2gloss2text \\
-      --root_dir /data/how2sign_hf \\
+      --root_dir /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features \\
       --dim 256 --epochs 300 --max_frames 300 --decode beam --beam_width 10 \\
       --use_bart --ctc_weight 0.3 --freeze_bart_epochs 5
 
   # Exp 6: How2Sign Sign2Gloss (CTC-only, pseudo-glosses as labels)
   python train.py --dataset how2sign --exp_name exp6_how2sign_sign2gloss \\
-      --root_dir /data/how2sign_hf \\
+      --root_dir /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features \\
       --dim 256 --epochs 200 --max_frames 300 --decode beam --beam_width 10
 """
 
@@ -614,10 +614,7 @@ def main():
         # How2Sign: build tokenizer from PSEUDOGLOSS column if present.
         # CSVs live in metadata/ inside the HF cache root.
         meta_dir = Path(args.root_dir) / 'metadata'
-        for csv_name in ('how2sign_realigned_train.csv', 'how2sign_train.csv'):
-            pseudo_csv = meta_dir / csv_name
-            if pseudo_csv.exists():
-                break
+        pseudo_csv = meta_dir / 'how2sign_realigned_train.csv'
         pseudo_glosses = []
         if pseudo_csv.exists():
             df_h2s = pd.read_csv(pseudo_csv, sep='\t')

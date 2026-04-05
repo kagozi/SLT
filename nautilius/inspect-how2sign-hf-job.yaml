@@ -1,5 +1,6 @@
-# Inspect /data/how2sign_hf dataset and log statistics + sample keypoint
+# Inspect How2Sign HF holistic features and log statistics + sample keypoint
 # visualizations to Weights & Biases project "slt-how2sign".
+# Reads from /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features/
 #
 # To deploy:
 #   kubectl apply -f nautilius/inspect-how2sign-hf-job.yaml
@@ -20,7 +21,7 @@ spec:
         command: ["python", "inspect_how2sign_hf.py"]
         args:
           - "--root_dir"
-          - "/data/how2sign_hf"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--wandb_proj"
           - "slt-how2sign"
           - "--n_samples"

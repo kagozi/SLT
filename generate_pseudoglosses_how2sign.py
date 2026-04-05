@@ -5,14 +5,15 @@ For each English sentence, extract content words (NOUN, VERB, ADJ, ADV)
 using spaCy lemmatisation and POS filtering. These serve as a weak
 gloss-like intermediate supervision signal for CTC training.
 
-Reads:   <root_dir>/annotations/how2sign_{split}.csv
+Reads:   <root_dir>/metadata/how2sign_realigned_{split}.csv
 Writes:  PSEUDOGLOSS column back into the same CSV in-place.
          How2SignDataset picks it up automatically on the next training run.
 
 Logs 200 random samples per split to a W&B Table for manual review.
 
 Usage (local):
-    python generate_pseudoglosses_how2sign.py --root_dir /data/how2sign_hf
+    python generate_pseudoglosses_how2sign.py \
+        --root_dir /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features
 
 Usage (NRP job):
     kubectl apply -f nautilius/generate-pseudoglosses-job.yaml
@@ -115,7 +116,8 @@ def main():
         description='Generate POS-based pseudoglosses for How2Sign'
     )
     parser.add_argument('--root_dir', type=str, required=True,
-                        help='Path to How2Sign RGB root (contains annotations/ subdirectory)')
+                        help='Path to HF holistic features root '
+                             '(contains metadata/how2sign_realigned_{split}.csv)')
     parser.add_argument('--splits', nargs='+', default=['train', 'val', 'test'])
     args = parser.parse_args()
 

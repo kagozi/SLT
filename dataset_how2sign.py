@@ -21,11 +21,9 @@ Selected 75 landmarks -> 225 features:
 Expected layout on the PVC (HF cache, no pre-processing needed):
     <root_dir>/                    # e.g. /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features
         metadata/
-            how2sign_realigned_train.csv   (preferred)
+            how2sign_realigned_train.csv
             how2sign_realigned_val.csv
             how2sign_realigned_test.csv
-            how2sign_train.csv             (fallback)
-            ...
         train/frontal/{SENTENCE_NAME}_holistic.npy   (T, 543, 3) float32
         val/frontal/
         test/frontal/
@@ -173,7 +171,8 @@ class How2SignDataset(Dataset):
     landmark selection + normalization on-the-fly via process_holistic().
 
     Args:
-        root_dir:        Root of the how2sign_hf data tree.
+        root_dir:        Root of the HF holistic features tree
+                         (e.g. /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features).
         split:           'train', 'val', or 'test'.
         max_frames:      Pad / truncate to this many frames.
         augment:         Spatial + temporal augmentation (train split only).
@@ -192,14 +191,11 @@ class How2SignDataset(Dataset):
         self.tokenizer      = tokenizer
         self.bart_tokenizer = bart_tokenizer
 
-        # ── CSV: prefer realigned, fallback to plain ──────────────────────────
+        # ── CSV: realigned only ───────────────────────────────────────────────
         meta_dir = self.root_dir / 'metadata'
         csv_path = meta_dir / f'how2sign_realigned_{split}.csv'
         if not csv_path.exists():
-            csv_path = meta_dir / f'how2sign_{split}.csv'
-        if not csv_path.exists():
-            raise FileNotFoundError(
-                f"Annotations CSV not found (tried realigned and plain) in {meta_dir}")
+            raise FileNotFoundError(f"Realigned CSV not found: {csv_path}")
 
         df = pd.read_csv(csv_path, sep='\t')
         df.columns = [c.strip() for c in df.columns]

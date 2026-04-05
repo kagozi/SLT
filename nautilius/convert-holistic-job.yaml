@@ -1,24 +1,16 @@
-# Convert PSewmuthu/How2Sign_Holistic (HuggingFace, 33.8 GB) to 225-dim keypoints.
+# Convert PSewmuthu/How2Sign_Holistic (HuggingFace) raw (T, 543, 3) npy arrays.
 #
-# Output goes to /data/how2sign_hf — separate from /data/how2sign_hf (auto-segmented)
-# so both datasets coexist and can be used for parallel experiments.
+# NOTE: This job is now OBSOLETE. The training pipeline reads directly from
+# the HF cache at /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features/.
+# No pre-conversion step is needed. Kept for reference only.
 #
-# Pipeline:
-#   1. Download How2Sign_Holistic dataset from HuggingFace (~33.8 GB)
-#      - Raw MediaPipe Holistic npy arrays (T, 543, 3) + re-aligned CSVs
-#   2. Convert each clip: extract pose+hands+face subset, apply
-#      wrist-relative / neck-norm → (max_frames, 225) float32
-#   3. Write re-aligned annotation CSVs with PSEUDOGLOSS column
+# What it did:
+#   Read  /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features/{split}/frontal/*.npy
+#   Write /data/how2sign_hf/raw/{split}/{SENTENCE_NAME}.npy  (same raw arrays, different layout)
+#   Write /data/how2sign_hf/annotations/how2sign_{split}.csv (with PSEUDOGLOSS)
 #
-# Directory layout after completion:
-#   /data/how2sign_hf/
-#       annotations/how2sign_{train,val,test}.csv   (re-aligned, with PSEUDOGLOSS)
-#       keypoints/{train,val,test}/{SENTENCE_NAME}.npy   (300, 225) float32
-#
-# No GPU needed. Runtime estimate: ~1-2 hours (download + ~31K conversions).
-#
-# To deploy:
-#   kubectl apply -f nautilius/convert-holistic-job.yaml
+# All processing (landmark selection, wrist-relative, neck norm) now happens
+# on-load in dataset_how2sign.py — no pre-processing needed.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -26,7 +18,7 @@ metadata:
   namespace: gai-lina-group
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 604800   # keep pod logs for 7 days
+  ttlSecondsAfterFinished: 604800
   template:
     spec:
       restartPolicy: Never
