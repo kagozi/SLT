@@ -1,9 +1,9 @@
 # Pre-extracts MediaPipe Holistic keypoints from How2Sign RGB clips.
 # Each CSV sentence row is clipped to its START/END window before extraction.
 #
-# Reads from:  /data/how2sign_rgb/{train,val,test}/*.mp4
-#              /data/how2sign_rgb/annotations/how2sign_{split}.csv
-# Writes to:   /data/how2sign_rgb/keypoints/{train,val,test}/{SENTENCE_NAME}.npy
+# Reads from:  /data/how2sign_hf/{train,val,test}/*.mp4
+#              /data/how2sign_hf/annotations/how2sign_{split}.csv
+# Writes to:   /data/how2sign_hf/keypoints/{train,val,test}/{SENTENCE_NAME}.npy
 #
 # Run AFTER extract-how2sign-rgb job completes.
 apiVersion: batch/v1
@@ -23,7 +23,7 @@ spec:
         command: ["python", "preextract_keypoints_how2sign.py"]
         args:
           - "--root_dir"
-          - "/data/how2sign_rgb"
+          - "/data/how2sign_hf"
           - "--max_frames"
           - "300"
           - "--splits"

@@ -23,7 +23,7 @@ Usage (NRP):
 Usage (local):
     python train_joint.py \\
         --phoenix_dir /data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \\
-        --how2sign_dir /data/how2sign_rgb \\
+        --how2sign_dir /data/how2sign_hf \\
         --output_dir /data/experiments \\
         --exp_name exp11_joint_training \\
         --epochs 150 --dim 256 --batch_size 16
@@ -374,7 +374,7 @@ def main():
         description='Joint PHOENIX + How2Sign training with language-aware encoder')
     parser.add_argument('--phoenix_dir', type=str,
                         default='/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T')
-    parser.add_argument('--how2sign_dir', type=str, default='/data/how2sign_rgb')
+    parser.add_argument('--how2sign_dir', type=str, default='/data/how2sign_hf')
     parser.add_argument('--output_dir',  type=str, default='/data/experiments')
     parser.add_argument('--exp_name',    type=str, default='exp11_joint_training')
     parser.add_argument('--epochs',      type=int, default=150)

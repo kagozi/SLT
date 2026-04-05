@@ -1,6 +1,6 @@
 # Convert PSewmuthu/How2Sign_Holistic (HuggingFace, 33.8 GB) to 225-dim keypoints.
 #
-# Output goes to /data/how2sign_hf — separate from /data/how2sign_rgb (auto-segmented)
+# Output goes to /data/how2sign_hf — separate from /data/how2sign_hf (auto-segmented)
 # so both datasets coexist and can be used for parallel experiments.
 #
 # Pipeline:

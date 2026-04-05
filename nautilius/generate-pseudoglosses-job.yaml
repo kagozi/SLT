@@ -19,7 +19,7 @@ spec:
         command: ["python", "generate_pseudoglosses_how2sign.py"]
         args:
           - "--root_dir"
-          - "/data/how2sign_rgb"
+          - "/data/how2sign_hf"
           - "--splits"
           - "train"
           - "val"

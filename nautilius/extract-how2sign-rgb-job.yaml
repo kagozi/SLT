@@ -1,14 +1,14 @@
 # Extracts How2Sign RGB clip zips into split subdirectories.
 # Expects the following layout already on the PVC:
-#   /data/how2sign_rgb/train_rgb_front_clips.zip
-#   /data/how2sign_rgb/val_rgb_front_clips.zip
-#   /data/how2sign_rgb/test_rgb_front_clips.zip
-#   /data/how2sign_rgb/annotations/
+#   /data/how2sign_hf/train_rgb_front_clips.zip
+#   /data/how2sign_hf/val_rgb_front_clips.zip
+#   /data/how2sign_hf/test_rgb_front_clips.zip
+#   /data/how2sign_hf/annotations/
 #
 # After completion:
-#   /data/how2sign_rgb/train/   <- mp4 files
-#   /data/how2sign_rgb/val/     <- mp4 files
-#   /data/how2sign_rgb/test/    <- mp4 files
+#   /data/how2sign_hf/train/   <- mp4 files
+#   /data/how2sign_hf/val/     <- mp4 files
+#   /data/how2sign_hf/test/    <- mp4 files
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -30,7 +30,7 @@ spec:
 
             apt-get update -qq && apt-get install -y -qq unzip
 
-            BASE=/data/how2sign_rgb
+            BASE=/data/how2sign_hf
 
             for SPLIT in train val test; do
               ZIP="${BASE}/${SPLIT}_rgb_front_clips.zip"

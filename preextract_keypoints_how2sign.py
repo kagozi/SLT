@@ -21,7 +21,7 @@ Output (written next to the video splits):
 
 Usage:
     python preextract_keypoints_how2sign.py \\
-        --root_dir /data/how2sign_rgb \\
+        --root_dir /data/how2sign_hf \\
         --max_frames 300 \\
         --splits train val test
 """
@@ -108,7 +108,7 @@ def main():
         description='Pre-extract MediaPipe keypoints from How2Sign RGB clips.'
     )
     parser.add_argument('--root_dir', type=str, required=True,
-                        help='Path to how2sign_rgb root directory')
+                        help='Path to how2sign_hf root directory')
     parser.add_argument('--max_frames', type=int, default=300,
                         help='Max frames per sentence (default: 300)')
     parser.add_argument('--splits', nargs='+', default=['train', 'val', 'test'])

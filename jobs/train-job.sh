@@ -60,7 +60,7 @@ mamba activate slt-multistream
 ## American Sign Language (ASL)
 python train.py \
     --dataset how2sign \
-    --root_dir /data/how2sign_rgb \
+    --root_dir /data/how2sign_hf \
     --use_bart \
     --ctc_weight 0.0 \
     --freeze_bart_epochs 0 \
