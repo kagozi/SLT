@@ -11,7 +11,9 @@ Pipeline:
   5. Wipe stale keypoints cache
   6. Re-run MediaPipe extraction on new clips
 
-All output goes to /data/how2sign_hf (same root the training pipeline uses).
+NOTE: This script is OBSOLETE. The training pipeline now reads directly from
+the HF cache at /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features/.
+No re-segmentation or keypoint re-extraction is needed.
 """
 
 import argparse
@@ -48,7 +50,7 @@ FULL_VIDEO_IDS = {
     'test': ('1z0i6BBGHQ12ChY63hZH56QnczvQ0JfTb', 'test_raw.zip'),
 }
 
-ROOT        = Path('/data/how2sign_hf')
+ROOT        = Path('/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features')
 FULL_VIDEOS = Path('/data/how2sign_full_videos')   # temp; deleted after re-segmentation
 ANNO_DIR    = ROOT / 'annotations'
 KPS_DIR     = ROOT / 'keypoints'

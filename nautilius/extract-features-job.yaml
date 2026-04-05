@@ -21,7 +21,7 @@ spec:
           - "--phoenix_dir"
           - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
           - "--how2sign_dir"
-          - "/data/how2sign_hf"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--checkpoint"
           - "/data/experiments/exp11_joint_training/models/best_model.pt"
           - "--output_dir"

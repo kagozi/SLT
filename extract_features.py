@@ -19,7 +19,7 @@ Usage (local):
     python extract_features.py \\
         --checkpoint /data/experiments/exp1_phoenix_sign2gloss/models/best_model.pt \\
         --phoenix_dir /data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \\
-        --how2sign_dir /data/how2sign_hf \\
+        --how2sign_dir /data/hf_cache/How2Sign_Holistic/how2sign_holistic_features \\
         --n_samples 500 \\
         --output_dir /data/experiments/feature_analysis
 """
@@ -302,7 +302,8 @@ def main():
                         help='Path to .pt model checkpoint')
     parser.add_argument('--phoenix_dir',  type=str,
                         default='/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T')
-    parser.add_argument('--how2sign_dir', type=str, default='/data/how2sign_hf')
+    parser.add_argument('--how2sign_dir', type=str,
+                        default='/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features')
     parser.add_argument('--output_dir',   type=str, default='/data/experiments/feature_analysis')
     parser.add_argument('--n_samples',    type=int, default=500,
                         help='Max samples per dataset for projection (default: 500)')
