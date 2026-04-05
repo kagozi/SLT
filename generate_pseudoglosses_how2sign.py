@@ -56,12 +56,13 @@ def extract_pseudogloss(doc) -> str:
 
 
 def process_split(root_dir: Path, split: str, nlp) -> None:
-    csv_path = root_dir / 'annotations' / f'how2sign_{split}.csv'
+    csv_path = root_dir / 'metadata' / f'how2sign_realigned_{split}.csv'
     if not csv_path.exists():
-        print(f"  [{split}] CSV not found: {csv_path}, skipping.")
+        print(f"  [{split}] Realigned CSV not found: {csv_path}, skipping.")
         return
 
     df = pd.read_csv(csv_path, sep='\t')
+    df.columns = [c.strip() for c in df.columns]
 
     if 'PSEUDOGLOSS' in df.columns:
         already = df['PSEUDOGLOSS'].notna().sum()
@@ -76,7 +77,7 @@ def process_split(root_dir: Path, split: str, nlp) -> None:
     pseudoglosses = [extract_pseudogloss(doc) for doc in docs]
 
     df['PSEUDOGLOSS'] = pseudoglosses
-    df.to_csv(csv_path, sep='\t', index=False)
+    df.to_csv(csv_path, sep='\t', index=False)  # writes back to metadata/how2sign_realigned_{split}.csv
 
     # ── Summary stats ────────────────────────────────────────────────────────
     n_unknown = sum(1 for p in pseudoglosses if p == 'UNKNOWN')
@@ -142,7 +143,7 @@ def main():
         process_split(root_dir, split, nlp)
 
     wandb.finish()
-    print("\nAll splits done. PSEUDOGLOSS column written to annotations CSVs.")
+    print("\nAll splits done. PSEUDOGLOSS column written to metadata/how2sign_realigned_{split}.csv.")
     print("How2SignDataset will load pseudoglosses automatically on next training run.")
 
 
