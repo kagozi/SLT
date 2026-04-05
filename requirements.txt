@@ -1,7 +1,11 @@
 torch
 numpy
 pandas
+matplotlib
 tqdm
 opencv-contrib-python
 mediapipe
 transformers
+huggingface_hub
+rarfile
+sacrebleu

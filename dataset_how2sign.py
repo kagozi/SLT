@@ -1,23 +1,32 @@
 """
-How2Sign Dataset loader — RGB-extracted keypoints.
+How2Sign Dataset loader.
+
+Loads raw (T, 543, 3) MediaPipe Holistic keypoints and applies landmark
+selection + normalization on-the-fly, matching the PHOENIX pipeline exactly.
+
+Correct MediaPipe Holistic layout (543 landmarks):
+    Pose        :   0 -  32  (33 landmarks)
+    Face mesh   :  33 - 500  (468 landmarks,  face mesh idx i = holistic 33+i)
+    Left hand   : 501 - 521  (21 landmarks)
+    Right hand  : 522 - 542  (21 landmarks)
+
+Selected 75 landmarks -> 225 features:
+    13 pose  x 3 =  39
+    21 lhand x 3 =  63
+    21 rhand x 3 =  63
+    20 face  x 3 =  60
+    total: 75 joints x 3 = 225
 
 Expected layout on the PVC:
     <root_dir>/
         annotations/
-            how2sign_train.csv   (tab-sep, cols: SENTENCE_NAME, SENTENCE, [PSEUDOGLOSS], …)
+            how2sign_train.csv
             how2sign_val.csv
             how2sign_test.csv
-        keypoints/
-            train/{SENTENCE_NAME}.npy   (T, 225) float32 — pre-extracted by MediaPipe
+        raw/
+            train/{SENTENCE_NAME}.npy   (T, 543, 3) float32
             val/
             test/
-        train/                          (pre-trimmed mp4 clips, available for future use)
-            {SENTENCE_NAME}.mp4
-        val/
-        test/
-
-Produces (max_frames, 225) tensors identical to the PHOENIX pipeline.
-Compatible with the existing collate_fn and Trainer.
 """
 
 import random
@@ -29,12 +38,137 @@ import torch
 from torch.utils.data import Dataset
 
 
+# ── Landmark selection ───────────────────────────────────────────────────────
+
+# 13 upper-body pose landmarks (indices into the 33-landmark pose block, 0-32)
+POSE_SELECT = [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24]
+
+# 21 hand landmarks each (correct holistic indices)
+LHAND_SELECT = list(range(501, 522))
+RHAND_SELECT = list(range(522, 543))
+
+# 20 face landmarks — face mesh indices mapped to holistic space (33 + mesh_idx)
+FACE_MESH_IDS = [
+    61, 291, 0, 17, 39, 269, 181, 405,   # lips (8)
+    70, 63, 105,                           # left eyebrow (3)
+    300, 293, 334,                         # right eyebrow (3)
+    33, 133,                               # left eye (2)
+    263, 362,                              # right eye (2)
+    1, 2,                                  # nose (2)
+]
+FACE_SELECT = [33 + i for i in FACE_MESH_IDS]
+
+# Combined 75-landmark selection array (indices into 543-landmark holistic)
+ALL_SELECT = np.array(POSE_SELECT + LHAND_SELECT + RHAND_SELECT + FACE_SELECT)
+assert len(ALL_SELECT) == 75
+
+# ── Positions within the 75-landmark array after selection ──────────────────
+# Pose:       indices  0-12  (13 landmarks)
+# Left hand:  indices 13-33  (21 landmarks)
+# Right hand: indices 34-54  (21 landmarks)
+# Face:       indices 55-74  (20 landmarks)
+_P  = len(POSE_SELECT)    # 13
+_LH = len(LHAND_SELECT)   # 21
+_RH = len(RHAND_SELECT)   # 21
+
+LHAND_OFFSET = _P            # 13
+RHAND_OFFSET = _P + _LH     # 34
+
+# Wrist positions in the selected 13-pose block
+# POSE_SELECT[9]  = 15 = left wrist
+# POSE_SELECT[10] = 16 = right wrist
+LWRIST_IDX  = 9
+RWRIST_IDX  = 10
+
+# Shoulder positions in the selected 13-pose block
+# POSE_SELECT[5] = 11 = left shoulder
+# POSE_SELECT[6] = 12 = right shoulder
+LSHOULDER_IDX = 5
+RSHOULDER_IDX = 6
+
+
+# ── Processing ───────────────────────────────────────────────────────────────
+
+def _interpolate(arr: np.ndarray) -> np.ndarray:
+    """Fill all-zero frames by linear interpolation. arr: (T, J, 3)."""
+    T = len(arr)
+    for i in range(T):
+        if np.all(arr[i] == 0):
+            last = i - 1
+            while last >= 0 and np.all(arr[last] == 0):
+                last -= 1
+            nxt = i + 1
+            while nxt < T and np.all(arr[nxt] == 0):
+                nxt += 1
+            if last >= 0 and nxt < T:
+                alpha = (i - last) / (nxt - last)
+                arr[i] = (1 - alpha) * arr[last] + alpha * arr[nxt]
+            elif last >= 0:
+                arr[i] = arr[last]
+            elif nxt < T:
+                arr[i] = arr[nxt]
+    return arr
+
+
+def process_holistic(raw: np.ndarray, max_frames: int) -> np.ndarray:
+    """
+    (T, 543, 3) -> (max_frames, 225) float32.
+
+    Pipeline:
+      1. Select 75 landmarks with correct indices
+      2. Interpolate missing (all-zero) frames
+      3. Wrist-relative hands
+      4. Neck normalization (subtract shoulder midpoint from all joints)
+      5. Flatten + pad/truncate to max_frames
+    """
+    T = raw.shape[0]
+
+    # 1. Select 75 landmarks
+    sel = raw[:, ALL_SELECT, :].copy()   # (T, 75, 3)
+
+    # 2. Interpolate missing frames
+    sel = _interpolate(sel)
+
+    # 3. Wrist-relative hands (vectorized)
+    lw = sel[:, LWRIST_IDX, :]           # (T, 3)
+    rw = sel[:, RWRIST_IDX, :]
+    lh = sel[:, LHAND_OFFSET:LHAND_OFFSET + _LH, :]
+    rh = sel[:, RHAND_OFFSET:RHAND_OFFSET + _RH, :]
+    lh_missing = np.all(lh == 0, axis=(1, 2))  # (T,)
+    rh_missing = np.all(rh == 0, axis=(1, 2))
+    sel[:, LHAND_OFFSET:LHAND_OFFSET + _LH, :] = np.where(
+        lh_missing[:, None, None], lh, lh - lw[:, None, :])
+    sel[:, RHAND_OFFSET:RHAND_OFFSET + _RH, :] = np.where(
+        rh_missing[:, None, None], rh, rh - rw[:, None, :])
+
+    # 4. Neck normalization (vectorized)
+    neck = (sel[:, LSHOULDER_IDX, :] + sel[:, RSHOULDER_IDX, :]) * 0.5  # (T, 3)
+    sel -= neck[:, None, :]
+
+    # 5. Flatten + pad/truncate
+    flat = sel.reshape(T, -1).astype(np.float32)   # (T, 225)
+    flat = np.nan_to_num(flat)
+
+    if T < max_frames:
+        pad = np.zeros((max_frames - T, 225), dtype=np.float32)
+        flat = np.vstack([flat, pad])
+    else:
+        flat = flat[:max_frames]
+
+    return flat   # (max_frames, 225)
+
+
+# ── Dataset ──────────────────────────────────────────────────────────────────
+
 class How2SignDataset(Dataset):
     """
-    PyTorch Dataset for How2Sign (RGB-extracted keypoints).
+    PyTorch Dataset for How2Sign.
+
+    Loads raw (T, 543, 3) holistic keypoints from raw/{split}/ and applies
+    landmark selection + normalization on-the-fly via process_holistic().
 
     Args:
-        root_dir:        Root of the how2sign_rgb data tree.
+        root_dir:        Root of the how2sign_hf data tree.
         split:           'train', 'val', or 'test'.
         max_frames:      Pad / truncate to this many frames.
         augment:         Spatial + temporal augmentation (train split only).
@@ -59,14 +193,13 @@ class How2SignDataset(Dataset):
 
         df = pd.read_csv(csv_path, sep='\t')
 
-        kps_dir   = self.root_dir / 'keypoints' / split
-        video_dir = self.root_dir / split
+        raw_dir = self.root_dir / 'raw' / split
 
         self.samples = []
         missing = 0
         for _, row in df.iterrows():
             sentence_name = str(row['SENTENCE_NAME'])
-            npy_path = kps_dir / f"{sentence_name}.npy"
+            npy_path = raw_dir / f"{sentence_name}.npy"
 
             if not npy_path.exists():
                 missing += 1
@@ -74,7 +207,6 @@ class How2SignDataset(Dataset):
 
             self.samples.append({
                 'npy_path':      npy_path,
-                'video_path':    video_dir / f"{sentence_name}.mp4",
                 'sentence_name': sentence_name,
                 'sentence':      str(row['SENTENCE']) if pd.notna(row['SENTENCE']) else "",
                 'pseudogloss':   str(row['PSEUDOGLOSS'])
@@ -93,25 +225,17 @@ class How2SignDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
 
-        keypoints = np.load(sample['npy_path']).astype(np.float32)   # (T, 225)
+        raw = np.load(sample['npy_path'])             # (T, 543, 3)
+        kps = process_holistic(raw, self.max_frames)  # (max_frames, 225)
 
         num_real_frames = max(
-            1, int((np.linalg.norm(keypoints, axis=-1) != 0).sum())
+            1, int((np.linalg.norm(kps, axis=-1) != 0).sum())
         )
 
-        keypoints = torch.FloatTensor(keypoints)
+        keypoints = torch.FloatTensor(kps)
 
         if self.augment:
             keypoints = self._augment(keypoints)
-
-        # Pad / truncate
-        T = keypoints.shape[0]
-        if T > self.max_frames:
-            keypoints = keypoints[:self.max_frames]
-            num_real_frames = min(num_real_frames, self.max_frames)
-        elif T < self.max_frames:
-            pad = torch.zeros(self.max_frames - T, keypoints.shape[1])
-            keypoints = torch.cat([keypoints, pad], dim=0)
 
         # Gloss (pseudo-gloss or dummy)
         gloss_text    = sample['pseudogloss']
@@ -130,13 +254,12 @@ class How2SignDataset(Dataset):
             translation_ids = encoded['input_ids'].squeeze(0)
 
         result = {
-            'keypoints':   keypoints,           # (max_frames, 225)
+            'keypoints':   keypoints,
             'gloss':       gloss_indices,
             'gloss_text':  gloss_text,
             'translation': translation_text,
             'name':        sample['sentence_name'],
             'num_frames':  num_real_frames,
-            'video_path':  str(sample['video_path']),
         }
         if translation_ids is not None:
             result['translation_ids'] = translation_ids

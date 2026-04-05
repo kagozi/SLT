@@ -1,10 +1,13 @@
-# Experiment 3: PHOENIX-2014-T — Glossless Sign2Text (mBART only, ctc_weight=0)
-# No gloss supervision. Encoder feeds directly into mBART decoder.
-# Uses facebook/mbart-large-cc25 with forced_bos_token_id=250003 (de_DE).
+# Experiment 16: How2Sign — Enhanced flat encoder (glossless)
+# Flat 225-d encoder + velocity features + CTC smoothing disabled (no CTC) +
+# contrastive loss (NT-Xent, w=0.1) for encoder regularisation.
+# R-Drop omitted (no CTC logits in glossless mode).
+# Direct upgrade over Exp 4.
+# Contrastive replaces CTC's encoder-shaping role without needing noisy pseudo-glosses.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp3-phoenix-glossless
+  name: train-exp16-how2sign-enhanced
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -18,13 +21,13 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/how2sign_hf"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp3_phoenix_glossless"
+          - "exp16_how2sign_enhanced"
           - "--epochs"
           - "200"
           - "--decode"
@@ -41,10 +44,6 @@ spec:
           - "--num_workers"
           - "4"
           - "--use_bart"
-          - "--bart_model"
-          - "facebook/mbart-large-cc25"
-          - "--forced_bos_token_id"
-          - "250003"
           - "--ctc_weight"
           - "0.0"
           - "--freeze_bart_epochs"
@@ -53,6 +52,11 @@ spec:
           - "4"
           - "--label_smoothing"
           - "0.1"
+          - "--use_motion"
+          - "--contrastive_weight"
+          - "0.1"
+          - "--ctc_smoothing"
+          - "0.0"
         env:
         - name: WANDB_API_KEY
           valueFrom:

@@ -20,7 +20,7 @@ spec:
           - "--dataset"
           - "how2sign"
           - "--root_dir"
-          - "/data/how2sign_rgb"
+          - "/data/how2sign_hf"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
@@ -32,7 +32,10 @@ spec:
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "16"
+          - "4"
+          - "--grad_accum"
+          - "4"
+          - "--fp16"
           - "--dim"
           - "256"
           - "--max_frames"
@@ -44,6 +47,10 @@ spec:
           - "0.0"
           - "--freeze_bart_epochs"
           - "0"
+          - "--ffn_expand"
+          - "4"
+          - "--label_smoothing"
+          - "0.1"
         env:
         - name: WANDB_API_KEY
           valueFrom:

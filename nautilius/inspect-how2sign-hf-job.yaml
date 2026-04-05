@@ -1,0 +1,47 @@
+# Inspect /data/how2sign_hf dataset and log statistics + sample keypoint
+# visualizations to Weights & Biases project "slt-how2sign".
+#
+# To deploy:
+#   kubectl apply -f nautilius/inspect-how2sign-hf-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inspect-how2sign-hf
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: inspector
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "inspect_how2sign_hf.py"]
+        args:
+          - "--root_dir"
+          - "/data/how2sign_hf"
+          - "--wandb_proj"
+          - "slt-how2sign"
+          - "--n_samples"
+          - "5"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+          limits:
+            cpu: "2"
+            memory: "8Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

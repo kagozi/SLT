@@ -1,10 +1,13 @@
-# Experiment 3: PHOENIX-2014-T — Glossless Sign2Text (mBART only, ctc_weight=0)
-# No gloss supervision. Encoder feeds directly into mBART decoder.
-# Uses facebook/mbart-large-cc25 with forced_bos_token_id=250003 (de_DE).
+# Experiment 18: How2Sign — Multi-stream encoder (glossless)
+# MultiStreamSignLanguageTransformer with glossless mBART translation.
+# Per-stream velocity always included. Contrastive loss (w=0.1) shapes the
+# encoder without needing pseudo-glosses.
+# Expected: +2-4 BLEU over Exp 4; best How2Sign configuration.
+# If Exp 18 >> Exp 16: multi-stream worth the compute for transfer exps.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp3-phoenix-glossless
+  name: train-exp18-how2sign-multistream
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -18,13 +21,13 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/how2sign_hf"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp3_phoenix_glossless"
+          - "exp18_how2sign_multistream"
           - "--epochs"
           - "200"
           - "--decode"
@@ -40,11 +43,8 @@ spec:
           - "256"
           - "--num_workers"
           - "4"
+          - "--multistream"
           - "--use_bart"
-          - "--bart_model"
-          - "facebook/mbart-large-cc25"
-          - "--forced_bos_token_id"
-          - "250003"
           - "--ctc_weight"
           - "0.0"
           - "--freeze_bart_epochs"
@@ -53,6 +53,10 @@ spec:
           - "4"
           - "--label_smoothing"
           - "0.1"
+          - "--contrastive_weight"
+          - "0.1"
+          - "--ctc_smoothing"
+          - "0.0"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -62,11 +66,11 @@ spec:
         resources:
           requests:
             cpu: "4"
-            memory: "32Gi"
+            memory: "40Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "4"
-            memory: "32Gi"
+            memory: "40Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

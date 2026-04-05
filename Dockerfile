@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libgl1 \
     git \
+    unrar \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps
@@ -18,7 +19,7 @@ RUN pip install --no-cache-dir \
       ultralytics \
       einops sentencepiece regex scikit-learn \
       omegaconf hydra-core tensorboard sacrebleu nltk \
-      wandb kaggle \
+      wandb kaggle rarfile sacrebleu \
       "transformers==4.44.2" \
       spacy && \
     python -m spacy download en_core_web_sm
@@ -27,3 +28,5 @@ RUN pip install --no-cache-dir \
 COPY *.py .
 
 ENV PYTHONPATH=/workspace
+ENV PYTHONUNBUFFERED=1
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

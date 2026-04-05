@@ -1,0 +1,56 @@
+# Download-only job for PSewmuthu/How2Sign_Holistic from HuggingFace.
+# Saves raw dataset to /data/hf_cache/How2Sign_Holistic for inspection
+# before running the conversion step.
+#
+# After completion, inspect the files:
+#   kubectl exec -n gai-lina-group <pod> -- ls /data/hf_cache/How2Sign_Holistic/
+#
+# To deploy:
+#   kubectl apply -f nautilius/download-holistic-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-holistic
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 604800
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: downloader
+        image: ghcr.io/kagozi/slt:latest
+        command:
+          - python
+          - -c
+          - |
+            from huggingface_hub import snapshot_download
+            import os
+            out = '/data/hf_cache/How2Sign_Holistic'
+            os.makedirs(out, exist_ok=True)
+            print(f'Downloading PSewmuthu/How2Sign_Holistic → {out}', flush=True)
+            snapshot_download(
+                repo_id='PSewmuthu/How2Sign_Holistic',
+                repo_type='dataset',
+                local_dir=out,
+                local_dir_use_symlinks=False,
+            )
+            print('Download complete.', flush=True)
+            import subprocess
+            subprocess.run(['find', out, '-maxdepth', '4',
+                            '!', '-name', '*.npy', '-ls'])
+        resources:
+          requests:
+            cpu: "4"
+            memory: "8Gi"
+          limits:
+            cpu: "4"
+            memory: "8Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

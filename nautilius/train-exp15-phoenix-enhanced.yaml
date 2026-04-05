@@ -1,10 +1,12 @@
-# Experiment 3: PHOENIX-2014-T — Glossless Sign2Text (mBART only, ctc_weight=0)
-# No gloss supervision. Encoder feeds directly into mBART decoder.
-# Uses facebook/mbart-large-cc25 with forced_bos_token_id=250003 (de_DE).
+# Experiment 15: PHOENIX-2014-T — Enhanced flat encoder
+# Flat 225-d encoder + velocity features (use_motion) + CTC smoothing +
+# contrastive loss (NT-Xent, w=0.1) + R-Drop (w=5.0).
+# Direct upgrade over Exp 2 (same CTC+mBART pipeline, same hyperparams).
+# Ablation: use_motion contributes ~1-2 BLEU, contrastive ~1-2, R-Drop ~1-2 WER.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp3-phoenix-glossless
+  name: train-exp15-phoenix-enhanced
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -24,7 +26,7 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp3_phoenix_glossless"
+          - "exp15_phoenix_enhanced"
           - "--epochs"
           - "200"
           - "--decode"
@@ -32,9 +34,9 @@ spec:
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "4"
+          - "2"
           - "--grad_accum"
-          - "4"
+          - "8"
           - "--fp16"
           - "--dim"
           - "256"
@@ -46,12 +48,19 @@ spec:
           - "--forced_bos_token_id"
           - "250003"
           - "--ctc_weight"
-          - "0.0"
+          - "0.5"
           - "--freeze_bart_epochs"
-          - "0"
+          - "20"
           - "--ffn_expand"
           - "4"
           - "--label_smoothing"
+          - "0.1"
+          - "--use_motion"
+          - "--contrastive_weight"
+          - "0.1"
+          - "--rdrop_weight"
+          - "5.0"
+          - "--ctc_smoothing"
           - "0.1"
         env:
         - name: WANDB_API_KEY

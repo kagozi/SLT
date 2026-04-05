@@ -1,10 +1,14 @@
-# Experiment 3: PHOENIX-2014-T — Glossless Sign2Text (mBART only, ctc_weight=0)
-# No gloss supervision. Encoder feeds directly into mBART decoder.
-# Uses facebook/mbart-large-cc25 with forced_bos_token_id=250003 (de_DE).
+# Experiment 17: PHOENIX-2014-T — Multi-stream encoder
+# MultiStreamSignLanguageTransformer: 4 body-part streams (pose/lhand/rhand/face)
+# with per-stream velocity, separate ConvBlocks, cross-stream attention fusion,
+# then shared TransformerBlocks + CTC + mBART.
+# Contrastive loss (w=0.1) + R-Drop (w=5.0).
+# Expected: +2-4 BLEU over Exp 2; highest-ceiling single-change for PHOENIX.
+# Use results to decide freeze strategy for Exp 7-9 (transfer experiments).
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp3-phoenix-glossless
+  name: train-exp17-phoenix-multistream
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -24,7 +28,7 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp3_phoenix_glossless"
+          - "exp17_phoenix_multistream"
           - "--epochs"
           - "200"
           - "--decode"
@@ -32,26 +36,33 @@ spec:
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "4"
+          - "2"
           - "--grad_accum"
-          - "4"
+          - "8"
           - "--fp16"
           - "--dim"
           - "256"
           - "--num_workers"
           - "4"
+          - "--multistream"
           - "--use_bart"
           - "--bart_model"
           - "facebook/mbart-large-cc25"
           - "--forced_bos_token_id"
           - "250003"
           - "--ctc_weight"
-          - "0.0"
+          - "0.5"
           - "--freeze_bart_epochs"
-          - "0"
+          - "20"
           - "--ffn_expand"
           - "4"
           - "--label_smoothing"
+          - "0.1"
+          - "--contrastive_weight"
+          - "0.1"
+          - "--rdrop_weight"
+          - "5.0"
+          - "--ctc_smoothing"
           - "0.1"
         env:
         - name: WANDB_API_KEY
@@ -62,11 +73,11 @@ spec:
         resources:
           requests:
             cpu: "4"
-            memory: "32Gi"
+            memory: "40Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "4"
-            memory: "32Gi"
+            memory: "40Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data
