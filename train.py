@@ -285,20 +285,32 @@ def save_experiment(args, exp_name, results_dir, models_dir,
         json.dump(metrics_out, f, indent=2)
     
     # ── Predictions CSV ──
-    df = pd.DataFrame({
-        'name': eval_data['names'],
-        'target_gloss': eval_data['targets'],
-        'predicted_gloss': eval_data['preds'],
-        'correct': [p.strip() == t.strip() 
-                    for p, t in zip(eval_data['preds'], eval_data['targets'])]
-    })
-    if eval_data['trans_preds']:
+    n_rows = len(eval_data['names'])
+    df = pd.DataFrame({'name': eval_data['names']})
+
+    gloss_targets = list(eval_data['targets'])
+    gloss_preds = list(eval_data['preds'])
+    if len(gloss_targets) == n_rows and len(gloss_preds) == n_rows:
+        df['target_gloss'] = gloss_targets
+        df['predicted_gloss'] = gloss_preds
+        df['correct'] = [
+            p.strip() == t.strip()
+            for p, t in zip(gloss_preds, gloss_targets)
+        ]
+    else:
+        df['target_gloss'] = [''] * n_rows
+        df['predicted_gloss'] = [''] * n_rows
+        df['correct'] = [False] * n_rows
+
+    if eval_data['trans_preds'] or eval_data['trans_targets']:
         tp = list(eval_data['trans_preds'])
         tt = list(eval_data['trans_targets'])
-        while len(tp) < len(df): tp.append('')
-        while len(tt) < len(df): tt.append('')
-        df['target_translation'] = tt[:len(df)]
-        df['predicted_translation'] = tp[:len(df)]
+        while len(tp) < n_rows:
+            tp.append('')
+        while len(tt) < n_rows:
+            tt.append('')
+        df['target_translation'] = tt[:n_rows]
+        df['predicted_translation'] = tp[:n_rows]
     preds_path = results_dir / f"predictions_{exp_name}.csv"
     df.to_csv(preds_path, index=False)
     
@@ -353,7 +365,7 @@ def _plot_beam_sweep(sweep_rows: list):
     if not sweep_rows:
         return
     plots = {}
-    has_trans = any(r['trans_bleu4'] > 0 for r in sweep_rows)
+    has_trans = any(not math.isnan(r['trans_bleu4']) for r in sweep_rows)
 
     for metric, ylabel, title, key in [
         ('WER',     'WER (lower is better)',    'WER vs Beam Width',          'WER'),
@@ -389,6 +401,8 @@ def plot_val_test_comparison(val_metrics: dict, test_metrics: dict):
     labels = metric_keys
     val_vals  = [val_metrics.get(k, 0) for k in labels]
     test_vals = [test_metrics.get(k, 0) for k in labels]
+    val_vals = [0 if v is None else v for v in val_vals]
+    test_vals = [0 if v is None else v for v in test_vals]
 
     x = np.arange(len(labels))
     width = 0.35
@@ -756,6 +770,9 @@ def main():
             contrastive_weight=args.contrastive_weight,
             rdrop_weight=args.rdrop_weight,
             ctc_smoothing=args.ctc_smoothing,
+            total_epochs=args.epochs,
+            base_lr=args.lr,
+            bart_lr=args.lr * 0.05,
         )
         print(f"\n🏋️ Training for {args.epochs} epochs...")
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,
@@ -785,7 +802,9 @@ def main():
 
     val_sample_rows = []
     for i in range(min(50, len(val_data['names']))):
-        row = [val_data['names'][i], val_data['targets'][i], val_data['preds'][i]]
+        target_gloss = val_data['targets'][i] if i < len(val_data['targets']) else ''
+        pred_gloss = val_data['preds'][i] if i < len(val_data['preds']) else ''
+        row = [val_data['names'][i], target_gloss, pred_gloss]
         if val_data['trans_preds'] and i < len(val_data['trans_preds']):
             row += [val_data['trans_targets'][i], val_data['trans_preds'][i]]
         val_sample_rows.append(row)
@@ -808,7 +827,9 @@ def main():
 
     test_sample_rows = []
     for i in range(min(50, len(test_data['names']))):
-        row = [test_data['names'][i], test_data['targets'][i], test_data['preds'][i]]
+        target_gloss = test_data['targets'][i] if i < len(test_data['targets']) else ''
+        pred_gloss = test_data['preds'][i] if i < len(test_data['preds']) else ''
+        row = [test_data['names'][i], target_gloss, pred_gloss]
         if test_data['trans_preds'] and i < len(test_data['trans_preds']):
             row += [test_data['trans_targets'][i], test_data['trans_preds'][i]]
         test_sample_rows.append(row)
@@ -848,10 +869,15 @@ def main():
     # ─── Show test samples ───
     print(f"\n🔍 Sample predictions (test):")
     for i in range(min(10, len(test_data['names']))):
-        correct = test_data['preds'][i].strip() == test_data['targets'][i].strip()
+        target_gloss = test_data['targets'][i] if i < len(test_data['targets']) else ''
+        pred_gloss = test_data['preds'][i] if i < len(test_data['preds']) else ''
+        correct = bool(pred_gloss.strip()) and pred_gloss.strip() == target_gloss.strip()
         mark = "✅" if correct else "❌"
-        print(f"  {mark} Target: {test_data['targets'][i]}")
-        print(f"     Pred:   {test_data['preds'][i]}")
+        if target_gloss or pred_gloss:
+            print(f"  {mark} Target: {target_gloss}")
+            print(f"     Pred:   {pred_gloss}")
+        else:
+            print(f"  {mark} Gloss:  N/A (translation-only evaluation)")
         if test_data['trans_preds'] and i < len(test_data['trans_preds']):
             print(f"     Trans:  {test_data['trans_preds'][i]}")
         print()

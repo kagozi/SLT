@@ -104,7 +104,7 @@ def collate_fn(batch):
     if all('translation_ids' in item and item['translation_ids'] is not None for item in batch):
         trans_ids = [item['translation_ids'] for item in batch]
         result['translation_ids'] = nn.utils.rnn.pad_sequence(
-            trans_ids, batch_first=True, padding_value=1  # BART pad_token_id=1
+            trans_ids, batch_first=True, padding_value=-100
         )
     
     return result
@@ -147,45 +147,70 @@ def ctc_beam_decode(logits, input_lengths=None, beam_width=10):
     log_probs = F.log_softmax(logits, dim=-1)
     decoded = []
 
+    def _logsumexp_pair(a, b):
+        if a == float('-inf'):
+            return b
+        if b == float('-inf'):
+            return a
+        m = max(a, b)
+        return m + math.log(math.exp(a - m) + math.exp(b - m))
+
     for b in range(B):
         valid_len = input_lengths[b].item() if input_lengths is not None else T
-        
-        # beam: dict of {prefix_tuple: log_prob}
-        beams = {(): 0.0}
+
+        # prefix -> (log p(prefix ending with blank), log p(prefix ending with non-blank))
+        beams = {(): (0.0, float('-inf'))}
 
         for t in range(valid_len):
-            lp = log_probs[b, t]  # (V,)
-            # Only consider top-k tokens per timestep for efficiency
-            topk_vals, topk_idx = lp.topk(min(beam_width * 2, V))
-            
-            new_beams = {}
-            for prefix, score in beams.items():
-                for k in range(topk_vals.shape[0]):
-                    c = topk_idx[k].item()
-                    new_score = score + topk_vals[k].item()
+            lp = log_probs[b, t]
+            topk_vals, topk_idx = lp.topk(min(max(beam_width * 2, 8), V))
+            next_beams = {}
 
-                    if c == 0:  # blank
-                        key = prefix
-                    elif len(prefix) > 0 and prefix[-1] == c:
-                        key = prefix  # collapse duplicate
+            for prefix, (p_blank, p_nonblank) in beams.items():
+                total_prefix = _logsumexp_pair(p_blank, p_nonblank)
+
+                # Extend with blank: prefix stays unchanged.
+                blank_prob = total_prefix + lp[0].item()
+                nb = next_beams.get(prefix, (float('-inf'), float('-inf')))
+                next_beams[prefix] = (_logsumexp_pair(nb[0], blank_prob), nb[1])
+
+                for k in range(topk_idx.shape[0]):
+                    token = topk_idx[k].item()
+                    if token == 0:
+                        continue
+
+                    token_prob = lp[token].item()
+                    end_token = prefix[-1] if prefix else None
+
+                    if token == end_token:
+                        # Repeating token without a blank keeps the same prefix.
+                        rep_prob = p_nonblank + token_prob
+                        nb = next_beams.get(prefix, (float('-inf'), float('-inf')))
+                        next_beams[prefix] = (nb[0], _logsumexp_pair(nb[1], rep_prob))
+
+                        # Repeating token after a blank creates/extends the prefix.
+                        new_prefix = prefix + (token,)
+                        ext_prob = p_blank + token_prob
                     else:
-                        key = prefix + (c,)
+                        new_prefix = prefix + (token,)
+                        ext_prob = total_prefix + token_prob
 
-                    if key not in new_beams or new_beams[key] < new_score:
-                        new_beams[key] = new_score
+                    nb = next_beams.get(new_prefix, (float('-inf'), float('-inf')))
+                    next_beams[new_prefix] = (nb[0], _logsumexp_pair(nb[1], ext_prob))
 
-            # Prune: keep top beam_width, normalized by length
-            scored = [(k, v / max(1, len(k))) for k, v in new_beams.items()]
-            scored.sort(key=lambda x: -x[1])
-            # Store un-normalized scores for next iteration
-            beams = {}
-            for k, _ in scored[:beam_width]:
-                beams[k] = new_beams[k]
+            ranked = sorted(
+                next_beams.items(),
+                key=lambda kv: _logsumexp_pair(kv[1][0], kv[1][1]) / max(1, len(kv[0])),
+                reverse=True,
+            )
+            beams = dict(ranked[:beam_width])
 
-        # Pick best beam (length-normalized)
         if beams:
-            best = max(beams.items(), key=lambda x: x[1] / max(1, len(x[0])))
-            decoded.append(list(best[0]))
+            best_prefix = max(
+                beams.items(),
+                key=lambda kv: _logsumexp_pair(kv[1][0], kv[1][1]) / max(1, len(kv[0])),
+            )[0]
+            decoded.append(list(best_prefix))
         else:
             decoded.append([])
 
@@ -209,7 +234,8 @@ class Trainer:
     def __init__(self, model, train_loader, val_loader, tokenizer, device='cuda',
                  bart_tokenizer=None, use_bart=False, ctc_weight=0.3,
                  freeze_bart_epochs=5, models_dir=None, grad_accum=1, fp16=False,
-                 contrastive_weight=0.0, rdrop_weight=0.0, ctc_smoothing=0.1):
+                 contrastive_weight=0.0, rdrop_weight=0.0, ctc_smoothing=0.1,
+                 total_epochs=100, base_lr=1e-3, bart_lr=5e-5):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -227,6 +253,9 @@ class Trainer:
         self.stage = 1
         self.contrastive_weight = contrastive_weight
         self.rdrop_weight       = rdrop_weight
+        self.total_epochs       = max(1, total_epochs)
+        self.base_lr            = base_lr
+        self.bart_lr            = bart_lr
 
         # Optional contrastive projection head — registered on the model so it
         # is saved/loaded with the checkpoint automatically.
@@ -260,13 +289,17 @@ class Trainer:
             else:
                 encoder_params.append(p)
 
-        self.optimizer = torch.optim.AdamW([
-            {'params': encoder_params, 'lr': 1e-3, 'weight_decay': 1e-4},
-            {'params': bart_params,    'lr': 5e-5, 'weight_decay': 0.01},
-        ])
+        param_groups = []
+        encoder_trainable = [p for p in encoder_params if p.requires_grad]
+        bart_trainable = [p for p in bart_params if p.requires_grad]
+        if encoder_trainable:
+            param_groups.append({'params': encoder_trainable, 'lr': base_lr, 'weight_decay': 1e-4})
+        if bart_trainable:
+            param_groups.append({'params': bart_trainable, 'lr': bart_lr, 'weight_decay': 0.01})
+        self.optimizer = torch.optim.AdamW(param_groups)
 
-        self.total_steps = len(train_loader) * 150
-        self.warmup_steps = len(train_loader) * 5
+        self.total_steps = len(train_loader) * self.total_epochs
+        self.warmup_steps = len(train_loader) * min(5, self.total_epochs)
         self.best_val_loss = float('inf')
 
     def _set_stage(self, epoch):
@@ -479,11 +512,10 @@ class Trainer:
         else:
             progress = (step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             factor = 0.5 * (1 + math.cos(math.pi * progress))
-        # Encoder group: base LR 1e-3
-        self.optimizer.param_groups[0]['lr'] = 1e-3 * factor
-        # BART group: base LR 5e-5 (20x lower)
+        if self.optimizer.param_groups:
+            self.optimizer.param_groups[0]['lr'] = self.base_lr * factor
         if len(self.optimizer.param_groups) > 1:
-            self.optimizer.param_groups[1]['lr'] = 5e-5 * factor
+            self.optimizer.param_groups[1]['lr'] = self.bart_lr * factor
 
     @staticmethod
     def _compute_wer_texts(preds: list, targets: list) -> float:
