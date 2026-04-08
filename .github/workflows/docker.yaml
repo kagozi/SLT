@@ -9,6 +9,8 @@ on:
       - "*.py"
       - "requirements.txt"
       - "environment.yaml"
+      - "nautilius/**"
+      - ".github/workflows/**"
 
 env:
   REGISTRY: ghcr.io
