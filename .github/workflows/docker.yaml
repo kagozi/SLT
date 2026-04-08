@@ -9,6 +9,7 @@ on:
       - "*.py"
       - "requirements.txt"
       - "environment.yaml"
+      - "nautilius/**"
 
 env:
   REGISTRY: ghcr.io
