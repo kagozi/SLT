@@ -169,7 +169,8 @@ class SignContrastiveLoss(nn.Module):
 class BARTTranslationHead(nn.Module):
     """Seq2Seq translation head (BART, mBART, Marian, etc.)."""
     def __init__(self, encoder_dim, bart_model="facebook/bart-base", max_len=128,
-                 label_smoothing=0.1):
+                 label_smoothing=0.1, source_len_cap=96,
+                 no_repeat_ngram_size=3, repetition_penalty=1.15):
         super().__init__()
         from transformers import AutoModelForSeq2SeqLM
         self.bart = AutoModelForSeq2SeqLM.from_pretrained(bart_model)
@@ -189,18 +190,44 @@ class BARTTranslationHead(nn.Module):
         self.max_len = max_len
         self._frozen = False
         self.label_smoothing = label_smoothing
+        self.source_len_cap = source_len_cap
+        self.no_repeat_ngram_size = no_repeat_ngram_size
+        self.repetition_penalty = repetition_penalty
 
-    def _project(self, encoder_hidden):
+    def _compress(self, encoder_hidden, encoder_mask=None):
+        if encoder_mask is None:
+            encoder_mask = encoder_hidden.new_ones(
+                encoder_hidden.shape[:2], dtype=encoder_hidden.dtype
+            )
+
+        hidden = encoder_hidden
+        mask = encoder_mask.float()
+
+        while hidden.size(1) > self.source_len_cap:
+            if hidden.size(1) % 2 == 1:
+                hidden = F.pad(hidden, (0, 0, 0, 1))
+                mask = F.pad(mask, (0, 1))
+
+            left_h, right_h = hidden[:, 0::2], hidden[:, 1::2]
+            left_m, right_m = mask[:, 0::2], mask[:, 1::2]
+            pair_mask = (left_m + right_m).clamp(min=1.0)
+            hidden = (left_h * left_m.unsqueeze(-1) + right_h * right_m.unsqueeze(-1)) / pair_mask.unsqueeze(-1)
+            mask = (left_m + right_m > 0).float()
+
+        return hidden, mask
+
+    def _project(self, encoder_hidden, encoder_mask=None):
         """Project encoder hidden states and wrap for HuggingFace."""
         from transformers.modeling_outputs import BaseModelOutput
+        encoder_hidden, encoder_mask = self._compress(encoder_hidden, encoder_mask)
         if self._frozen:
             projected = self.encoder_proj(encoder_hidden.detach())
         else:
             projected = self.encoder_proj(encoder_hidden)
-        return BaseModelOutput(last_hidden_state=projected)
+        return BaseModelOutput(last_hidden_state=projected), encoder_mask
 
     def forward(self, encoder_hidden, encoder_mask=None, labels=None):
-        encoder_out = self._project(encoder_hidden)
+        encoder_out, encoder_mask = self._project(encoder_hidden, encoder_mask)
         outputs = self.bart(encoder_outputs=encoder_out,
                             attention_mask=encoder_mask, labels=labels)
         loss = outputs.loss
@@ -217,11 +244,14 @@ class BARTTranslationHead(nn.Module):
     def generate(self, encoder_hidden, encoder_mask=None,
                  beam_width=5, max_len=None, length_penalty=1.0,
                  forced_bos_token_id=None):
-        encoder_out = self._project(encoder_hidden)
+        encoder_out, encoder_mask = self._project(encoder_hidden, encoder_mask)
         kwargs = dict(
             encoder_outputs=encoder_out, attention_mask=encoder_mask,
             max_length=max_len or self.max_len, num_beams=beam_width,
-            length_penalty=length_penalty, early_stopping=True)
+            length_penalty=length_penalty, early_stopping=True,
+            no_repeat_ngram_size=self.no_repeat_ngram_size,
+            repetition_penalty=self.repetition_penalty,
+        )
         if forced_bos_token_id is not None:
             kwargs['forced_bos_token_id'] = forced_bos_token_id
         return self.bart.generate(**kwargs)
@@ -262,7 +292,7 @@ class SignLanguageTransformer(nn.Module):
         self.dim        = dim
         self.use_motion = use_motion
 
-        proj_in = input_dim * 2 if use_motion else input_dim
+        proj_in = input_dim * 3 if use_motion else input_dim
         self.input_proj = nn.Linear(proj_in, dim, bias=False)
         self.pos_encoding = PositionalEncoding(dim, max_frames)
         self.norm = nn.LayerNorm(dim)
@@ -305,7 +335,9 @@ class SignLanguageTransformer(nn.Module):
         if self.use_motion:
             vel = torch.zeros_like(x)
             vel[:, 1:] = x[:, 1:] - x[:, :-1]
-            x = torch.cat([x, vel], dim=-1)   # (B, T, input_dim*2)
+            acc = torch.zeros_like(x)
+            acc[:, 1:] = vel[:, 1:] - vel[:, :-1]
+            x = torch.cat([x, vel, acc], dim=-1)   # (B, T, input_dim*3)
         x = self.input_proj(x)
         x = self.norm(x)
         x = self.pos_encoding(x)
@@ -341,7 +373,7 @@ class SignLanguageTransformer(nn.Module):
             return None
         return self.translation_head.generate(hidden, mask,
                                                beam_width=beam_width,
-                                               length_penalty=length_penalty,
+                                               length_penalty=max(length_penalty, 1.1),
                                                forced_bos_token_id=forced_bos_token_id)
 
     def freeze_translation(self):
@@ -431,7 +463,9 @@ class LanguageAwareSignTransformer(SignLanguageTransformer):
         if self.use_motion:
             vel = torch.zeros_like(x)
             vel[:, 1:] = x[:, 1:] - x[:, :-1]
-            x = torch.cat([x, vel], dim=-1)
+            acc = torch.zeros_like(x)
+            acc[:, 1:] = vel[:, 1:] - vel[:, :-1]
+            x = torch.cat([x, vel, acc], dim=-1)
         x = self.input_proj(x)
         x = self.norm(x)
         x = self.pos_encoding(x)
@@ -528,10 +562,10 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
         # Remove flat-encoder components (replaced by per-stream equivalents)
         del self.input_proj, self.norm, self.conv_blocks
 
-        # Per-stream input dims (raw features × 2 after velocity concat)
-        pose_d = 39 * 2    # 78
-        hand_d = 63 * 2    # 126  (L and R hands share this projection)
-        face_d = 60 * 2    # 120
+        # Per-stream input dims (raw features × 3 after velocity + acceleration concat)
+        pose_d = 39 * 3    # 117
+        hand_d = 63 * 3    # 189  (L and R hands share this projection)
+        face_d = 60 * 3    # 180
 
         # Stream projections + normalisation
         self.proj_pose  = nn.Linear(pose_d, dim, bias=False)
@@ -564,10 +598,12 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
 
     @staticmethod
     def _add_velocity(feat: torch.Tensor) -> torch.Tensor:
-        """Concat frame-difference features: (B,T,D) → (B,T,2D)."""
+        """Concat velocity + acceleration features: (B,T,D) → (B,T,3D)."""
         vel = torch.zeros_like(feat)
         vel[:, 1:] = feat[:, 1:] - feat[:, :-1]
-        return torch.cat([feat, vel], dim=-1)
+        acc = torch.zeros_like(feat)
+        acc[:, 1:] = vel[:, 1:] - vel[:, :-1]
+        return torch.cat([feat, vel, acc], dim=-1)
 
     def _encode_stream(self, raw, proj, norm, conv_blocks, mask):
         x = norm(proj(self._add_velocity(raw)))

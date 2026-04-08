@@ -5,6 +5,8 @@ import random
 from pathlib import Path
 import numpy as np
 from preprocessing import PhoenixKeypointExtractor
+from keypoint_utils import normalize_flat_keypoints
+from translation_utils import encode_translation_target
 
 
 class PhoenixSignDataset(Dataset):
@@ -50,6 +52,8 @@ class PhoenixSignDataset(Dataset):
             frame_dir = self.root_dir / 'features' / 'fullFrame-210x260px' / self.split / sequence_name
             keypoints = self.extractor.extract_from_frames(frame_dir, self.max_frames)
             np.save(kps_path, keypoints)
+
+        keypoints = normalize_flat_keypoints(keypoints.astype(np.float32))
         
         frame_norms = np.linalg.norm(keypoints, axis=-1)
         num_real_frames = max(1, int((frame_norms != 0).sum()))
@@ -77,11 +81,7 @@ class PhoenixSignDataset(Dataset):
         # BART translation token ids (if tokenizer provided)
         translation_ids = None
         if self.bart_tokenizer is not None:
-            encoded = self.bart_tokenizer(
-                translation_text, max_length=128, truncation=True,
-                padding=False, return_tensors='pt'
-            )
-            translation_ids = encoded['input_ids'].squeeze(0)
+            translation_ids = encode_translation_target(self.bart_tokenizer, translation_text, max_length=128)
         
         result = {
             'keypoints': keypoints,
@@ -125,7 +125,7 @@ class PhoenixSignDataset(Dataset):
             angle = random.uniform(*rotation_range) * np.pi / 180
             c, s = np.cos(angle), np.sin(angle)
             rot = torch.tensor([[c, -s], [s, c]], dtype=torch.float32)
-            center = torch.tensor([0.5, 0.5], dtype=torch.float32)
+            center = torch.zeros(2, dtype=torch.float32)
             xy = kps[..., :2] - center
             kps = torch.cat([xy @ rot.T + center, kps[..., 2:]], dim=-1)
         if translation_range:

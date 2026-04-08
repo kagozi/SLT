@@ -58,6 +58,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import wandb
+from translation_utils import resolve_translation_config, configure_tokenizer_for_target
 
 
 def _fig_to_wandb(fig) -> wandb.Image:
@@ -508,7 +509,7 @@ def main():
     
     # BART translation
     parser.add_argument('--use_bart', action='store_true', help='Enable BART Gloss→Text')
-    parser.add_argument('--bart_model', type=str, default='facebook/bart-base')
+    parser.add_argument('--bart_model', type=str, default='auto')
     parser.add_argument('--ctc_weight', type=float, default=0.3,
                         help='CTC loss weight (1.0=CTC only, 0.0=BART only)')
     parser.add_argument('--freeze_bart_epochs', type=int, default=5,
@@ -621,8 +622,17 @@ def main():
     bart_tokenizer = None
     if args.use_bart:
         from transformers import AutoTokenizer
+        translation_cfg = resolve_translation_config(args.dataset, args.bart_model)
+        args.bart_model = translation_cfg['bart_model']
         bart_tokenizer = AutoTokenizer.from_pretrained(args.bart_model)
+        auto_bos = configure_tokenizer_for_target(bart_tokenizer, translation_cfg['target_lang'])
+        if args.forced_bos_token_id is None and auto_bos is not None:
+            args.forced_bos_token_id = auto_bos
         print(f"  Seq2Seq tokenizer: {args.bart_model}")
+        if translation_cfg['target_lang'] is not None:
+            print(f"  Target language: {translation_cfg['target_lang']}")
+        if args.forced_bos_token_id is not None:
+            print(f"  forced_bos_token_id={args.forced_bos_token_id}")
     
     if args.dataset == 'phoenix':
         # Build gloss tokenizer from PHOENIX annotations

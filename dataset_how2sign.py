@@ -39,6 +39,8 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+from keypoint_utils import normalize_flat_keypoints, normalize_selected_keypoints
+from translation_utils import encode_translation_target
 
 
 # ── Landmark selection ───────────────────────────────────────────────────────
@@ -149,6 +151,7 @@ def process_holistic(raw: np.ndarray, max_frames: int) -> np.ndarray:
     sel -= neck[:, None, :]
 
     # 5. Flatten + pad/truncate
+    sel = normalize_selected_keypoints(sel)
     flat = sel.reshape(T, -1).astype(np.float32)   # (T, 225)
     flat = np.nan_to_num(flat)
 
@@ -235,6 +238,7 @@ class How2SignDataset(Dataset):
 
         raw = np.load(sample['npy_path'])             # (T, 543, 3)
         kps = process_holistic(raw, self.max_frames)  # (max_frames, 225)
+        kps = normalize_flat_keypoints(kps.astype(np.float32))
 
         num_real_frames = max(
             1, int((np.linalg.norm(kps, axis=-1) != 0).sum())
@@ -255,11 +259,7 @@ class How2SignDataset(Dataset):
         translation_text = sample['sentence']
         translation_ids  = None
         if self.bart_tokenizer is not None:
-            encoded = self.bart_tokenizer(
-                translation_text, max_length=128, truncation=True,
-                padding=False, return_tensors='pt'
-            )
-            translation_ids = encoded['input_ids'].squeeze(0)
+            translation_ids = encode_translation_target(self.bart_tokenizer, translation_text, max_length=128)
 
         result = {
             'keypoints':   keypoints,
@@ -301,7 +301,7 @@ class How2SignDataset(Dataset):
             angle = random.uniform(*rotation_range) * np.pi / 180
             c, s = np.cos(angle), np.sin(angle)
             rot = torch.tensor([[c, -s], [s, c]], dtype=torch.float32)
-            center = torch.tensor([0.5, 0.5], dtype=torch.float32)
+            center = torch.zeros(2, dtype=torch.float32)
             xy = kps[..., :2] - center
             kps = torch.cat([xy @ rot.T + center, kps[..., 2:]], dim=-1)
         if translation_range:

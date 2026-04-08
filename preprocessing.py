@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 import pickle
 from tqdm import tqdm
+from keypoint_utils import normalize_flat_keypoints
 
 
 class PhoenixKeypointExtractor:
@@ -206,7 +207,8 @@ class PhoenixKeypointExtractor:
         
         # Concatenate: 39 + 63 + 63 + 60 = 225
         data = np.concatenate([pose_flat, left_flat, right_flat, face_flat], axis=1)
-        
+        data = normalize_flat_keypoints(data.astype(np.float32))
+
         assert data.shape[1] == self._feature_dim, (
             f"Expected {self._feature_dim} features, got {data.shape[1]}. "
             f"pose={pose_flat.shape[1]}, left={left_flat.shape[1]}, "
