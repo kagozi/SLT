@@ -11,6 +11,7 @@ metadata:
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 345600
   template:
     spec:
       restartPolicy: Never
@@ -40,13 +41,13 @@ spec:
           - "--fp16"
           - "--dim"
           - "256"
+          - "--lr"
+          - "2e-4"
+          - "--dropout"
+          - "0.3"
           - "--num_workers"
           - "4"
           - "--use_bart"
-          - "--bart_model"
-          - "facebook/mbart-large-cc25"
-          - "--forced_bos_token_id"
-          - "250003"
           - "--ctc_weight"
           - "0.5"
           - "--freeze_bart_epochs"
@@ -68,6 +69,14 @@ spec:
             secretKeyRef:
               name: wandb-credentials
               key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
         resources:
           requests:
             cpu: "4"

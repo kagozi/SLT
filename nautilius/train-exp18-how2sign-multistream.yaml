@@ -1,8 +1,10 @@
+# Priority 4
 # Experiment 18: How2Sign — Multi-stream encoder (glossless)
 # MultiStreamSignLanguageTransformer with glossless mBART translation.
 # Per-stream velocity always included. Contrastive loss (w=0.1) shapes the
 # encoder without needing pseudo-glosses.
-# Expected: +2-4 BLEU over Exp 4; best How2Sign configuration.
+# Updated for the repaired codepath: lower LR and lighter regularisation to
+# reduce decoder collapse and unstable multistream optimisation.
 # If Exp 18 >> Exp 16: multi-stream worth the compute for transfer exps.
 apiVersion: batch/v1
 kind: Job
@@ -12,6 +14,7 @@ metadata:
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 345600
   template:
     spec:
       restartPolicy: Never
@@ -41,6 +44,10 @@ spec:
           - "--fp16"
           - "--dim"
           - "256"
+          - "--lr"
+          - "1.5e-4"
+          - "--dropout"
+          - "0.3"
           - "--num_workers"
           - "4"
           - "--multistream"
@@ -54,7 +61,7 @@ spec:
           - "--label_smoothing"
           - "0.1"
           - "--contrastive_weight"
-          - "0.1"
+          - "0.05"
           - "--ctc_smoothing"
           - "0.0"
         env:
@@ -63,6 +70,14 @@ spec:
             secretKeyRef:
               name: wandb-credentials
               key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
         resources:
           requests:
             cpu: "4"

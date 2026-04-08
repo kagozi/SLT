@@ -1,7 +1,8 @@
-# Experiment 12: How2Sign — Low-data Transfer (10% training data)
-# Pretrained from Exp 1 (PHOENIX Sign2Gloss). Full fine-tune on 10% of How2Sign train set.
+# Transfer Track B1
+# Experiment 12: How2Sign — Low-data Transfer (10% training data, multistream)
+# Pretrained from Exp 17 (PHOENIX multistream). Full fine-tune on 10% of How2Sign train set.
 # Tests practical utility: how much ASL data is needed given DGS pretraining?
-# Depends on: Exp 1 checkpoint at /data/experiments/exp1_phoenix_sign2gloss/models/best_model.pt
+# Depends on: Exp 17 checkpoint at /data/experiments/models/exp17_phoenix_multistream/best_exp17_phoenix_multistream.pt
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -10,6 +11,7 @@ metadata:
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 259200
   template:
     spec:
       restartPolicy: Never
@@ -33,21 +35,25 @@ spec:
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "16"
+          - "4"
+          - "--grad_accum"
+          - "4"
+          - "--fp16"
           - "--dim"
           - "256"
           - "--max_frames"
           - "300"
           - "--num_workers"
           - "4"
+          - "--multistream"
           - "--dropout"
           - "0.3"
           - "--pretrained_path"
-          - "/data/experiments/models/exp1_phoenix_sign2gloss/best_model.pt"
+          - "/data/experiments/models/exp17_phoenix_multistream/best_exp17_phoenix_multistream.pt"
           - "--freeze_strategy"
           - "none"
           - "--lr"
-          - "5e-5"
+          - "1e-4"
           - "--subset_pct"
           - "10"
         env:
@@ -56,14 +62,22 @@ spec:
             secretKeyRef:
               name: wandb-credentials
               key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
         resources:
           requests:
             cpu: "4"
-            memory: "16Gi"
+            memory: "32Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "4"
-            memory: "16Gi"
+            memory: "32Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data
