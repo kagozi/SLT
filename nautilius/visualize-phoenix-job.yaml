@@ -1,6 +1,5 @@
-# Visualise PHOENIX-2014-T samples: raw frames + keypoint skeletons side by side.
-# Output saved to /data/experiments/figures/ as PNG + PDF (manuscript-ready).
-# Adjust --sequences to target specific signing sequences by name.
+# Visualise a specific PHOENIX-2014-T clip: raw RGB frames + keypoint skeletons.
+# Output saved to /data/experiments/figures/ as PNG + PDF.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -15,16 +14,15 @@ spec:
       containers:
       - name: visualizer
         image: ghcr.io/kagozi/slt:latest
+        imagePullPolicy: Always
         command: ["python", "visualize_phoenix.py"]
         args:
           - "--root_dir"
           - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
-          - "--split"
-          - "dev"
+          - "--sequence_npy"
+          - "01April_2010_Thursday_heute-6697.npy"
           - "--output_dir"
           - "/data/experiments/figures"
-          - "--n_sequences"
-          - "3"
           - "--n_frames"
           - "5"
           - "--dpi"
