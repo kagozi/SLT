@@ -12,11 +12,18 @@ Usage (cluster):
         --root_dir /data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \
         --output_dir /data/experiments/figures \
         --split dev --n_frames 5 --n_sequences 2
+
+Target a specific cached keypoint clip:
+    python visualize_phoenix.py \
+        --root_dir /data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T \
+        --sequence_npy 01April_2010_Thursday_heute-6697.npy \
+        --output_dir /data/experiments/figures
 """
 
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 matplotlib.use('Agg')
@@ -105,6 +112,33 @@ CONN_COLORS = {
 JOINT_SIZES = {'pose': 35, 'left_hand': 18, 'right_hand': 18, 'face': 14}
 
 
+# ─── Hand repositioning ───────────────────────────────────────────────
+
+def _reattach_hands(xy: np.ndarray) -> np.ndarray:
+    """
+    Translate both hand groups so the hand wrist (joint 0 of each hand)
+    sits exactly on the corresponding pose wrist joint.
+
+      Left  hand wrist = idx P     (13) → pose left  wrist = idx 9
+      Right hand wrist = idx P+LH  (34) → pose right wrist = idx 10
+    """
+    xy = xy.copy()
+
+    def _translate(hand_start, hand_len, pose_wrist_idx):
+        hw = xy[hand_start]
+        pw = xy[pose_wrist_idx]
+        if np.allclose(hw, 0) or np.allclose(pw, 0):
+            return
+        offset = pw - hw
+        for k in range(hand_start, hand_start + hand_len):
+            if not np.allclose(xy[k], 0):
+                xy[k] += offset
+
+    _translate(P,      LH, 9)
+    _translate(P + LH, RH, 10)
+    return xy
+
+
 # ─── Core skeleton plot ───────────────────────────────────────────────
 
 def plot_skeleton(joints_75x3: np.ndarray, ax, title: str = '',
@@ -113,7 +147,7 @@ def plot_skeleton(joints_75x3: np.ndarray, ax, title: str = '',
     if dark_bg:
         ax.set_facecolor('#1a1a2e')
 
-    xy = joints_75x3[:, :2]   # x, y only
+    xy = _reattach_hands(joints_75x3[:, :2])   # x, y with hands repositioned
 
     def draw_conns(conns, color, lw=1.6, alpha=0.7):
         segs = []
@@ -328,6 +362,43 @@ def pick_sequences(root_dir: Path, split: str, n: int) -> list:
     return picked
 
 
+def resolve_sequence_and_split(root_dir: Path, split: Optional[str],
+                               sequence_npy: Optional[str],
+                               sequences: Optional[list]):
+    """
+    Resolve a specific PHOENIX sequence and split.
+
+    Priority:
+      1. --sequence_npy : auto-detect split from cached keypoints / frame dir
+      2. --sequences    : use provided sequence names with explicit split
+      3. fallback       : caller will use pick_sequences()
+    """
+    if sequence_npy:
+        seq_name = Path(sequence_npy).stem
+        candidate_splits = [split] if split else ['train', 'dev', 'test']
+        candidate_splits = [s for s in candidate_splits if s is not None]
+        if not candidate_splits:
+            candidate_splits = ['train', 'dev', 'test']
+
+        for cand in candidate_splits:
+            kps_path = root_dir / 'features' / 'keypoints' / cand / f'{seq_name}.npy'
+            frame_dir = root_dir / 'features' / 'fullFrame-210x260px' / cand / seq_name
+            if kps_path.exists() and frame_dir.exists():
+                print(f'  Resolved {seq_name} in split={cand}')
+                return cand, [seq_name]
+
+        sys.exit(f'Could not resolve {sequence_npy} in splits {candidate_splits}')
+
+    if sequences:
+        if split is None:
+            sys.exit('--split is required when using --sequences')
+        return split, sequences
+
+    if split is None:
+        split = 'dev'
+    return split, []
+
+
 # ─── CLI ──────────────────────────────────────────────────────────────
 
 def main():
@@ -335,7 +406,7 @@ def main():
         description='PHOENIX-2014-T manuscript figure: raw frames vs keypoints')
     parser.add_argument('--root_dir', default=
         '/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T')
-    parser.add_argument('--split', default='dev',
+    parser.add_argument('--split', default=None,
                         choices=['train', 'dev', 'test'])
     parser.add_argument('--output_dir', default='/data/experiments/figures')
     parser.add_argument('--n_frames', type=int, default=5,
@@ -344,6 +415,8 @@ def main():
                         help='Number of sequences to visualise')
     parser.add_argument('--sequences', nargs='+', default=None,
                         help='Specific sequence names (overrides --n_sequences)')
+    parser.add_argument('--sequence_npy', default=None,
+                        help='Specific cached .npy clip name, e.g. 01April_2010_Thursday_heute-6697.npy')
     parser.add_argument('--dpi', type=int, default=200)
     args = parser.parse_args()
 
@@ -351,12 +424,16 @@ def main():
     out  = Path(args.output_dir)
 
     print(f'Root:   {root}')
-    print(f'Split:  {args.split}')
     print(f'Output: {out}')
 
-    seqs = args.sequences or pick_sequences(root, args.split, args.n_sequences)
+    resolved_split, seqs = resolve_sequence_and_split(
+        root, args.split, args.sequence_npy, args.sequences
+    )
+    print(f'Split:  {resolved_split}')
+    if not seqs:
+        seqs = pick_sequences(root, resolved_split, args.n_sequences)
 
-    make_figure(seqs, root, args.split,
+    make_figure(seqs, root, resolved_split,
                 n_frames=args.n_frames,
                 output_dir=out,
                 dpi=args.dpi)
