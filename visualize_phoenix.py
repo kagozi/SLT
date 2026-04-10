@@ -227,11 +227,66 @@ def pick_active_frames(kps: np.ndarray, n: int) -> list:
 
 # ─── Main figure function ─────────────────────────────────────────────
 
+def _draw_part_cell(ax, xy: np.ndarray, rng: slice, conns: list,
+                    color_key: str, dark_bg: bool = True):
+    """
+    Draw a single body-part cell zoomed to that part's bounding box.
+    xy: (75, 2) global coordinates for one frame.
+    """
+    if dark_bg:
+        ax.set_facecolor('#1a1a2e')
+
+    segs = []
+    for i, j in conns:
+        if np.allclose(xy[i], 0) or np.allclose(xy[j], 0):
+            continue
+        segs.append([xy[i], xy[j]])
+    if segs:
+        ax.add_collection(LineCollection(segs, colors=CONN_COLORS[color_key],
+                                         linewidths=1.4, alpha=0.75, zorder=2))
+
+    pts  = xy[rng]
+    mask = ~np.all(pts == 0, axis=1)
+    if mask.any():
+        ax.scatter(pts[mask, 0], pts[mask, 1],
+                   s=18, c=JOINT_COLORS[color_key],
+                   edgecolors='white', linewidths=0.3, zorder=5, alpha=0.95)
+
+    valid = pts[mask] if mask.any() else pts
+    if len(valid):
+        x0, x1 = valid[:, 0].min(), valid[:, 0].max()
+        y0, y1 = valid[:, 1].min(), valid[:, 1].max()
+        px = max((x1 - x0) * 0.30, 0.015)
+        py = max((y1 - y0) * 0.30, 0.015)
+        ax.set_xlim(x0 - px, x1 + px)
+        ax.set_ylim(y1 + py, y0 - py)   # inverted y
+
+    ax.set_aspect('equal', adjustable='datalim')
+    ax.set_xticks([]); ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+
+# Stream row definitions (name, slice, connections, color key)
+_STREAM_PARTS = [
+    ('Pose',        POSE_R,  POSE_CONNS,  'pose'),
+    ('Left\nhand',  LHAND_R, LHAND_CONNS, 'left_hand'),
+    ('Right\nhand', RHAND_R, RHAND_CONNS, 'right_hand'),
+    ('Face',        FACE_R,  FACE_CONNS,  'face'),
+]
+
+
 def make_figure(sequences: list, root_dir: Path, split: str,
                 n_frames: int, output_dir: Path, dpi: int = 200):
     """
     sequences: list of sequence name strings from the CSV.
     Produces one figure per sequence and a combined figure.
+
+    Layout (6 rows):
+      Row 0   – raw RGB frames
+      Row 1   – full 75-joint skeleton (hands reattached)
+      Rows 2-5 – per-part stream: Pose / Left hand / Right hand / Face
+                 each cell zoomed to that body part
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     all_figs = []
@@ -255,26 +310,44 @@ def make_figure(sequences: list, root_dir: Path, split: str,
             continue
 
         frame_indices = pick_active_frames(kps, n_frames)
-        raw_imgs, all_pngs = load_frames(frame_dir, frame_indices)
+        raw_imgs, _ = load_frames(frame_dir, frame_indices)
 
-        # ── figure layout ──────────────────────────────────────────
-        fig = plt.figure(figsize=(n_frames * 2.8, 5.8),
+        # ── figure layout: 6 rows ──────────────────────────────────
+        # height_ratios: raw & skeleton slightly taller than stream cells
+        n_stream = len(_STREAM_PARTS)
+        height_ratios = [1.3, 1.3] + [0.85] * n_stream
+
+        fig = plt.figure(figsize=(n_frames * 2.8, 5.6 + n_stream * 1.9),
                          facecolor='#0f0f1a')
         fig.patch.set_facecolor('#0f0f1a')
 
-        gs = fig.add_gridspec(2, n_frames,
-                              hspace=0.06, wspace=0.04,
-                              top=0.88, bottom=0.02,
-                              left=0.01, right=0.99)
+        gs = fig.add_gridspec(2 + n_stream, n_frames,
+                              height_ratios=height_ratios,
+                              hspace=0.10, wspace=0.04,
+                              top=0.94, bottom=0.01,
+                              left=0.07, right=0.99)
 
-        # Row labels
-        fig.text(0.005, 0.72, 'Raw\nframe', va='center', ha='left',
-                 fontsize=9, color='#aaaaaa', rotation=90)
-        fig.text(0.005, 0.28, 'Keypoint\nskeleton', va='center', ha='left',
-                 fontsize=9, color='#aaaaaa', rotation=90)
+        # ── row labels (left margin) ───────────────────────────────
+        total_h  = sum(height_ratios)
+        cum      = 0
+        row_mids = []
+        for h in height_ratios:
+            row_mids.append(1 - (cum + h / 2) / total_h)
+            cum += h
+
+        label_x = 0.005
+        fig.text(label_x, row_mids[0], 'Raw\nframe',      va='center', ha='left',
+                 fontsize=8, color='#aaaaaa', rotation=90)
+        fig.text(label_x, row_mids[1], 'Full\nskeleton',  va='center', ha='left',
+                 fontsize=8, color='#aaaaaa', rotation=90)
+        for si, (part_name, *_) in enumerate(_STREAM_PARTS):
+            fig.text(label_x, row_mids[2 + si], part_name, va='center', ha='left',
+                     fontsize=8, color='#aaaaaa', rotation=90)
 
         for col, (fidx, raw_img) in enumerate(zip(frame_indices, raw_imgs)):
-            # ── top row: raw frame ────────────────────────────────
+            xy = kps_3d[fidx, :, :2]
+
+            # ── row 0: raw frame ──────────────────────────────────
             ax_raw = fig.add_subplot(gs[0, col])
             ax_raw.set_facecolor('#0f0f1a')
             if raw_img is not None:
@@ -288,11 +361,16 @@ def make_figure(sequences: list, root_dir: Path, split: str,
             for spine in ax_raw.spines.values():
                 spine.set_edgecolor('#333344'); spine.set_linewidth(0.5)
 
-            # ── bottom row: skeleton ──────────────────────────────
+            # ── row 1: full skeleton ──────────────────────────────
             ax_sk = fig.add_subplot(gs[1, col])
             plot_skeleton(kps_3d[fidx], ax_sk, dark_bg=True)
 
-        # Legend (bottom-right)
+            # ── rows 2-5: per-part stream ─────────────────────────
+            for si, (_, rng, conns, color_key) in enumerate(_STREAM_PARTS):
+                ax_p = fig.add_subplot(gs[2 + si, col])
+                _draw_part_cell(ax_p, xy, rng, conns, color_key, dark_bg=True)
+
+        # Legend
         patches = [
             mpatches.Patch(color=JOINT_COLORS['pose'],       label='Pose'),
             mpatches.Patch(color=JOINT_COLORS['left_hand'],  label='Left hand'),
@@ -304,10 +382,9 @@ def make_figure(sequences: list, root_dir: Path, split: str,
                    facecolor='#1a1a2e', edgecolor='#333344',
                    labelcolor='white', bbox_to_anchor=(0.99, 0.0))
 
-        # Title
         fig.suptitle(
             f'PHOENIX-2014-T  ·  {seq_name}  '
-            f'[75 landmarks · 225-d features]',
+            f'[75 landmarks · 225-d features · multistream]',
             fontsize=10, color='#ccccdd', y=0.97,
         )
 
