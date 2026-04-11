@@ -550,15 +550,15 @@ class Trainer:
 
     def _compute_bleu_texts(self, preds: list, targets: list) -> dict:
         """sacrebleu corpus BLEU — standard 13a tokenization + lowercase.
-        Returns scores in [0, 1] range to match the rest of the codebase."""
+        Returns scores as percentages (sacrebleu native scale, e.g. 17.3)."""
         from sacrebleu.metrics import BLEU
         bleu = BLEU(tokenize='13a', lowercase=True)
         result = bleu.corpus_score(preds, [targets])
         return {
-            'BLEU-1': result.precisions[0] / 100,
-            'BLEU-2': result.precisions[1] / 100,
-            'BLEU-4': result.precisions[3] / 100,
-            'BLEU':   result.score         / 100,
+            'BLEU-1': result.precisions[0],
+            'BLEU-2': result.precisions[1],
+            'BLEU-4': result.precisions[3],
+            'BLEU':   result.score,
         }
 
     @torch.no_grad()
