@@ -514,6 +514,9 @@ def main():
                         help='CTC loss weight (1.0=CTC only, 0.0=BART only)')
     parser.add_argument('--freeze_bart_epochs', type=int, default=5,
                         help='Epochs to freeze BART before joint training')
+    parser.add_argument('--warmup_bart_epochs', type=int, default=None,
+                        help='Epochs for detached decoder warmup before full joint training. '
+                             'Defaults to freeze_bart_epochs.')
     parser.add_argument('--forced_bos_token_id', type=int, default=None,
                         help='Force decoder to start with this token (e.g. mBART language id for German)')
     parser.add_argument('--ffn_expand', type=int, default=4,
@@ -565,7 +568,12 @@ def main():
                              '(Liang et al., NeurIPS 2021).')
     parser.add_argument('--ctc_smoothing', type=float, default=0.1,
                         help='Uniform label smoothing on CTC loss (default 0.1). '
-                             'Set 0.0 to disable.')
+                            'Set 0.0 to disable.')
+    parser.add_argument('--joint_encoder_lr_scale', type=float, default=0.2,
+                        help='LR multiplier for encoder params during full joint stage '
+                             'to reduce catastrophic forgetting.')
+    parser.add_argument('--joint_bart_lr_scale', type=float, default=0.5,
+                        help='LR multiplier for seq2seq params during full joint stage.')
 
     args = parser.parse_args()
     
@@ -774,6 +782,7 @@ def main():
             use_bart=args.use_bart,
             ctc_weight=args.ctc_weight,
             freeze_bart_epochs=args.freeze_bart_epochs,
+            warmup_bart_epochs=args.warmup_bart_epochs,
             models_dir=models_dir,
             grad_accum=args.grad_accum,
             fp16=args.fp16,
@@ -783,6 +792,8 @@ def main():
             total_epochs=args.epochs,
             base_lr=args.lr,
             bart_lr=args.lr * 0.05,
+            joint_encoder_lr_scale=args.joint_encoder_lr_scale,
+            joint_bart_lr_scale=args.joint_bart_lr_scale,
         )
         print(f"\n🏋️ Training for {args.epochs} epochs...")
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,

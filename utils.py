@@ -235,7 +235,9 @@ class Trainer:
                  bart_tokenizer=None, use_bart=False, ctc_weight=0.3,
                  freeze_bart_epochs=5, models_dir=None, grad_accum=1, fp16=False,
                  contrastive_weight=0.0, rdrop_weight=0.0, ctc_smoothing=0.1,
-                 total_epochs=100, base_lr=1e-3, bart_lr=5e-5):
+                 total_epochs=100, base_lr=1e-3, bart_lr=5e-5,
+                 warmup_bart_epochs=None, joint_encoder_lr_scale=0.2,
+                 joint_bart_lr_scale=0.5):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -256,6 +258,13 @@ class Trainer:
         self.total_epochs       = max(1, total_epochs)
         self.base_lr            = base_lr
         self.bart_lr            = bart_lr
+        self.warmup_bart_epochs = (
+            freeze_bart_epochs if warmup_bart_epochs is None else max(0, warmup_bart_epochs)
+        )
+        self.joint_encoder_lr_scale = joint_encoder_lr_scale
+        self.joint_bart_lr_scale    = joint_bart_lr_scale
+        self.best_score = None
+        self.best_summary = None
 
         # Optional contrastive projection head — registered on the model so it
         # is saved/loaded with the checkpoint automatically.
@@ -275,6 +284,8 @@ class Trainer:
             'train_contrastive':[], 'train_rdrop':        [],
             'val_loss':         [], 'val_wer':            [],
             'val_bleu1':        [], 'val_bleu4':          [],
+            'val_trans_bleu1':  [], 'val_trans_bleu4':    [],
+            'val_empty_pred_ratio': [], 'val_trans_repeat_ratio': [],
             'lr':               [],
         }
 
@@ -321,7 +332,7 @@ class Trainer:
             self.stage = 1
             print(f"\n  >>> Stage 1: CTC-only (BART frozen) <<<")
             self.model.freeze_translation()
-        elif epoch < self.freeze_bart_epochs * 2:
+        elif epoch < self.freeze_bart_epochs + self.warmup_bart_epochs:
             if self.stage == 2:
                 return
             self.stage = 2
@@ -504,6 +515,7 @@ class Trainer:
             'trans':       total_trans       / n,
             'contrastive': total_contrastive / n,
             'rdrop':       total_rdrop       / n,
+            'num_batches': num_batches,
         }
 
     def _adjust_learning_rate(self, step):
@@ -513,9 +525,11 @@ class Trainer:
             progress = (step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             factor = 0.5 * (1 + math.cos(math.pi * progress))
         if self.optimizer.param_groups:
-            self.optimizer.param_groups[0]['lr'] = self.base_lr * factor
+            enc_scale = self.joint_encoder_lr_scale if (self.use_bart and self.stage == 3) else 1.0
+            self.optimizer.param_groups[0]['lr'] = self.base_lr * factor * enc_scale
         if len(self.optimizer.param_groups) > 1:
-            self.optimizer.param_groups[1]['lr'] = self.bart_lr * factor
+            bart_scale = self.joint_bart_lr_scale if (self.use_bart and self.stage == 3) else 1.0
+            self.optimizer.param_groups[1]['lr'] = self.bart_lr * factor * bart_scale
 
     @staticmethod
     def _compute_wer_texts(preds: list, targets: list) -> float:
@@ -560,6 +574,40 @@ class Trainer:
             'BLEU-4': result.precisions[3],
             'BLEU':   result.score,
         }
+
+    @staticmethod
+    def _empty_prediction_ratio(pred_texts: list) -> float:
+        if not pred_texts:
+            return 1.0
+        return float(np.mean([1.0 if not str(p).strip() else 0.0 for p in pred_texts]))
+
+    @staticmethod
+    def _translation_repeat_ratio(pred_texts: list) -> float:
+        if not pred_texts:
+            return 1.0
+        def _score(text: str) -> float:
+            text = str(text).strip()
+            if len(text) < 2:
+                return 1.0
+            chars = [c for c in text if not c.isspace()]
+            if len(chars) < 2:
+                return 1.0
+            return 1.0 - (len(set(chars)) / len(chars))
+        return float(np.mean([_score(p) for p in pred_texts]))
+
+    def _select_score(self, val_loss, gloss_metrics, trans_metrics):
+        """Return a lexicographic checkpoint score tuple; larger is better."""
+        gloss_bleu4 = gloss_metrics.get('BLEU-4', 0.0)
+        trans_bleu4 = trans_metrics.get('BLEU-4', 0.0)
+        trans_bleu1 = trans_metrics.get('BLEU-1', 0.0)
+        gloss_wer = gloss_metrics.get('WER', 1.0)
+        safe_loss = val_loss if np.isfinite(val_loss) else 1e9
+
+        if self.use_bart and self.ctc_weight == 0:
+            return (trans_bleu4, trans_bleu1, -safe_loss)
+        if self.use_bart:
+            return (trans_bleu4, -gloss_wer, gloss_bleu4, -safe_loss)
+        return (-gloss_wer, gloss_bleu4, -safe_loss)
 
     @torch.no_grad()
     def validate(self, decode_mode='greedy', beam_width=5):
@@ -626,13 +674,16 @@ class Trainer:
                 except Exception:
                     pass
 
-        avg_loss = total_loss / max(1, num_batches)
-        
-        # Return translation predictions for glossless mode
-        if self.ctc_weight == 0 and all_trans_preds:
-            return avg_loss, all_trans_preds, all_trans_targets
-        
-        return avg_loss, all_predictions, all_targets
+        avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
+
+        return {
+            'loss': avg_loss,
+            'gloss_predictions': all_predictions,
+            'gloss_targets': all_targets,
+            'translation_predictions': all_trans_preds,
+            'translation_targets': all_trans_targets,
+            'num_loss_batches': num_batches,
+        }
 
     def train(self, num_epochs=100, decode_mode='greedy', beam_width=5):
         # ── Disk space guard: abort early rather than crash mid-training ──────
@@ -648,16 +699,34 @@ class Trainer:
         for epoch in range(num_epochs):
 
             metrics = self.train_epoch(epoch)
-            val_loss, predictions, targets = self.validate(
-                decode_mode=decode_mode, beam_width=beam_width)
+            val_out = self.validate(decode_mode=decode_mode, beam_width=beam_width)
+            val_loss = val_out['loss']
+            predictions = val_out['gloss_predictions']
+            targets = val_out['gloss_targets']
+            trans_predictions = val_out['translation_predictions']
+            trans_targets = val_out['translation_targets']
 
             # ── Decode predictions → text for WER / BLEU ──
             pred_texts = [
                 p if isinstance(p, str) else self.tokenizer.decode(p)
                 for p in predictions
             ]
-            val_wer  = self._compute_wer_texts(pred_texts, targets) if pred_texts else 1.0
+            val_wer = self._compute_wer_texts(pred_texts, targets) if pred_texts else 1.0
             val_bleu = self._compute_bleu_texts(pred_texts, targets) if pred_texts else {}
+            trans_bleu = (
+                self._compute_bleu_texts(trans_predictions, trans_targets)
+                if trans_predictions and trans_targets else {}
+            )
+            empty_pred_ratio = self._empty_prediction_ratio(pred_texts) if pred_texts else 1.0
+            trans_repeat_ratio = (
+                self._translation_repeat_ratio(trans_predictions)
+                if trans_predictions else 0.0
+            )
+            gloss_metrics = {
+                'WER': val_wer,
+                **val_bleu,
+            }
+            score = self._select_score(val_loss, gloss_metrics, trans_bleu)
 
             current_lr = self.optimizer.param_groups[0]['lr']
 
@@ -672,13 +741,23 @@ class Trainer:
             self.history['val_wer'].append(val_wer)
             self.history['val_bleu1'].append(val_bleu.get('BLEU-1', 0))
             self.history['val_bleu4'].append(val_bleu.get('BLEU-4', 0))
+            self.history['val_trans_bleu1'].append(trans_bleu.get('BLEU-1', 0))
+            self.history['val_trans_bleu4'].append(trans_bleu.get('BLEU-4', 0))
+            self.history['val_empty_pred_ratio'].append(empty_pred_ratio)
+            self.history['val_trans_repeat_ratio'].append(trans_repeat_ratio)
             self.history['lr'].append(current_lr)
 
             print(f'Epoch {epoch:3d}: Train={metrics["loss"]:.4f} '
                   f'(CTC={metrics["ctc"]:.4f} Trans={metrics["trans"]:.4f}) '
                   f'Val={val_loss:.4f}  WER={val_wer:.3f}  '
                   f'B1={val_bleu.get("BLEU-1",0):.3f}  B4={val_bleu.get("BLEU-4",0):.3f}  '
+                  f'TB4={trans_bleu.get("BLEU-4",0):.3f}  '
+                  f'Empty={empty_pred_ratio:.2f}  Repeat={trans_repeat_ratio:.2f}  '
                   f'LR={current_lr:.2e}')
+            if metrics['num_batches'] == 0:
+                print('  ⚠️ No train batches contributed a valid loss this epoch.')
+            if val_out['num_loss_batches'] == 0:
+                print('  ⚠️ No validation batches contributed a valid loss this epoch.')
 
             # ── W&B per-epoch metrics ──
             log_dict = {
@@ -695,6 +774,11 @@ class Trainer:
                 'val/bleu1':                val_bleu.get('BLEU-1', 0),
                 'val/bleu2':                val_bleu.get('BLEU-2', 0),
                 'val/bleu4':                val_bleu.get('BLEU-4', 0),
+                'val/trans_bleu1':          trans_bleu.get('BLEU-1', 0),
+                'val/trans_bleu2':          trans_bleu.get('BLEU-2', 0),
+                'val/trans_bleu4':          trans_bleu.get('BLEU-4', 0),
+                'val/empty_pred_ratio':     empty_pred_ratio,
+                'val/trans_repeat_ratio':   trans_repeat_ratio,
             }
             if wandb.run is not None:
                 wandb.log(log_dict, step=epoch)
@@ -717,8 +801,17 @@ class Trainer:
                         )
                     }, step=epoch)
 
-            if val_loss < self.best_val_loss:
+            if self.best_score is None or score > self.best_score:
+                self.best_score = score
                 self.best_val_loss = val_loss
+                self.best_summary = {
+                    'val_loss': val_loss,
+                    'val_wer': val_wer,
+                    'val_bleu4': val_bleu.get('BLEU-4', 0),
+                    'val_trans_bleu4': trans_bleu.get('BLEU-4', 0),
+                    'empty_pred_ratio': empty_pred_ratio,
+                    'trans_repeat_ratio': trans_repeat_ratio,
+                }
                 best_path = self.models_dir / 'best_model.pt'
                 torch.save({
                     'epoch':                epoch,
@@ -727,14 +820,18 @@ class Trainer:
                     'val_loss':             val_loss,
                     'val_wer':              val_wer,
                     'val_bleu4':            val_bleu.get('BLEU-4', 0),
+                    'val_trans_bleu4':      trans_bleu.get('BLEU-4', 0),
+                    'score':                score,
                 }, best_path)
                 print(f'  ✅ Best model saved (val_loss={val_loss:.4f}  '
-                      f'WER={val_wer:.3f}  BLEU-4={val_bleu.get("BLEU-4",0):.4f}) → {best_path}')
+                      f'WER={val_wer:.3f}  BLEU-4={val_bleu.get("BLEU-4",0):.4f}  '
+                      f'TransBLEU-4={trans_bleu.get("BLEU-4",0):.4f}) → {best_path}')
                 if wandb.run is not None:
                     wandb.log({
                         'val/best_loss':  val_loss,
                         'val/best_wer':   val_wer,
                         'val/best_bleu4': val_bleu.get('BLEU-4', 0),
+                        'val/best_trans_bleu4': trans_bleu.get('BLEU-4', 0),
                     }, step=epoch)
 
 
@@ -787,6 +884,9 @@ class Trainer:
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(ep, h['val_bleu1'], label='BLEU-1', color='mediumseagreen', linewidth=1.8)
         ax.plot(ep, h['val_bleu4'], label='BLEU-4', color='darkgreen',      linewidth=1.8)
+        if any(v > 0 for v in h['val_trans_bleu1']) or any(v > 0 for v in h['val_trans_bleu4']):
+            ax.plot(ep, h['val_trans_bleu1'], label='Trans BLEU-1', color='goldenrod', linewidth=1.4, linestyle='-.')
+            ax.plot(ep, h['val_trans_bleu4'], label='Trans BLEU-4', color='saddlebrown', linewidth=1.4, linestyle=':')
         _ax_style(ax, 'Validation BLEU', 'Epoch', 'BLEU (higher is better)')
         ax.legend()
         fig.tight_layout()
@@ -814,6 +914,16 @@ class Trainer:
         _ax_style(ax, 'Learning Rate Schedule', 'Epoch', 'LR')
         fig.tight_layout()
         plots['plots/lr_schedule'] = _fig_to_wandb(fig)
+
+        # 7. Collapse indicators
+        if any(v > 0 for v in h['val_empty_pred_ratio']) or any(v > 0 for v in h['val_trans_repeat_ratio']):
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(ep, h['val_empty_pred_ratio'], label='Empty gloss ratio', color='firebrick', linewidth=1.8)
+            ax.plot(ep, h['val_trans_repeat_ratio'], label='Translation repetition', color='darkslateblue', linewidth=1.8)
+            _ax_style(ax, 'Collapse Indicators', 'Epoch', 'Ratio (lower is better)')
+            ax.legend()
+            fig.tight_layout()
+            plots['plots/collapse_indicators'] = _fig_to_wandb(fig)
 
         if wandb.run is not None:
             wandb.log(plots)

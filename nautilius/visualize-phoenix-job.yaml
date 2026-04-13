@@ -29,11 +29,11 @@ spec:
           - "250"
         resources:
           requests:
-            cpu: "2"
-            memory: "8Gi"
+            cpu: "1"
+            memory: "4Gi"
           limits:
-            cpu: "2"
-            memory: "8Gi"
+            cpu: "1"
+            memory: "4Gi"
         volumeMounts:
         - name: slt-data
           mountPath: /data
