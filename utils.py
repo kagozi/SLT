@@ -313,6 +313,22 @@ class Trainer:
         self.warmup_steps = len(train_loader) * min(5, self.total_epochs)
         self.best_val_loss = float('inf')
 
+    @staticmethod
+    def _has_non_finite_grads(parameters) -> bool:
+        for p in parameters:
+            if p.grad is None:
+                continue
+            if not torch.isfinite(p.grad).all():
+                return True
+        return False
+
+    @staticmethod
+    def _has_non_finite_params(parameters) -> bool:
+        for p in parameters:
+            if not torch.isfinite(p.data).all():
+                return True
+        return False
+
     def _set_stage(self, epoch):
         """Manage training stages for BART."""
         if not self.use_bart:
@@ -381,11 +397,16 @@ class Trainer:
                         continue
                     trans_targets = trans_targets.to(self.device)
 
-                    output = self.model(keypoints, mask, translation_targets=trans_targets)
-
-                    if 'translation_loss' not in output:
+                    output = self.model(keypoints, mask)
+                    hidden = output.get('hidden')
+                    mask_out = output.get('mask')
+                    if hidden is None or self.model.translation_head is None:
                         continue
-                    trans_loss = output['translation_loss']
+                    with torch.cuda.amp.autocast(enabled=False):
+                        trans_out = self.model.translation_head(
+                            hidden.float(), encoder_mask=mask_out, labels=trans_targets
+                        )
+                    trans_loss = trans_out.get('loss')
                     if torch.isnan(trans_loss) or torch.isinf(trans_loss):
                         continue
 
@@ -411,7 +432,7 @@ class Trainer:
                         if trans_targets is not None:
                             trans_targets = trans_targets.to(self.device)
 
-                        output = self.model(keypoints, mask, translation_targets=trans_targets)
+                        output = self.model(keypoints, mask)
                         logits = output['logits']
                         mask_out = output['mask']
                     else:
@@ -437,8 +458,17 @@ class Trainer:
                         continue
 
                     # Combine CTC + translation losses
-                    if self.use_bart and self.stage >= 2 and isinstance(output, dict) and 'translation_loss' in output:
-                        trans_loss = output['translation_loss']
+                    if (
+                        self.use_bart and self.stage >= 2 and isinstance(output, dict)
+                        and trans_targets is not None and self.model.translation_head is not None
+                    ):
+                        with torch.cuda.amp.autocast(enabled=False):
+                            trans_out = self.model.translation_head(
+                                output['hidden'].float(),
+                                encoder_mask=mask_out,
+                                labels=trans_targets,
+                            )
+                        trans_loss = trans_out.get('loss')
                         if not (torch.isnan(trans_loss) or torch.isinf(trans_loss)):
                             loss = self.ctc_weight * ctc_loss + (1 - self.ctc_weight) * trans_loss
                             total_trans += trans_loss.item()
@@ -489,12 +519,32 @@ class Trainer:
             if (batch_idx + 1) % self.grad_accum == 0 or (batch_idx + 1) == len(self.train_loader):
                 if self.fp16:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    params = list(self.model.parameters())
+                    if self._has_non_finite_grads(params):
+                        print('  ⚠️ Skipping optimizer step due to non-finite gradients.')
+                        self.optimizer.zero_grad()
+                        if self.scaler is not None:
+                            self.scaler.update()
+                        continue
+                    torch.nn.utils.clip_grad_norm_(params, 1.0)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
+                    if self._has_non_finite_params(params):
+                        print('  ⚠️ Non-finite parameters detected after optimizer step; stopping epoch early.')
+                        self.optimizer.zero_grad()
+                        break
                 else:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    params = list(self.model.parameters())
+                    if self._has_non_finite_grads(params):
+                        print('  ⚠️ Skipping optimizer step due to non-finite gradients.')
+                        self.optimizer.zero_grad()
+                        continue
+                    torch.nn.utils.clip_grad_norm_(params, 1.0)
                     self.optimizer.step()
+                    if self._has_non_finite_params(params):
+                        print('  ⚠️ Non-finite parameters detected after optimizer step; stopping epoch early.')
+                        self.optimizer.zero_grad()
+                        break
                 self.optimizer.zero_grad()
 
             if batch_idx % 50 == 0:
@@ -666,9 +716,15 @@ class Trainer:
                         trans_targets = batch.get('translation_ids')
                         if trans_targets is not None:
                             trans_targets = trans_targets.to(self.device)
-                            t_out = self.model(keypoints, mask, translation_targets=trans_targets)
-                            if 'translation_loss' in t_out:
-                                tl = t_out['translation_loss']
+                            t_out = self.model(keypoints, mask)
+                            hidden = t_out.get('hidden')
+                            mask_out = t_out.get('mask')
+                            if hidden is not None and self.model.translation_head is not None:
+                                with torch.cuda.amp.autocast(enabled=False):
+                                    trans_out = self.model.translation_head(
+                                        hidden.float(), encoder_mask=mask_out, labels=trans_targets
+                                    )
+                                tl = trans_out.get('loss')
                                 if not (torch.isnan(tl) or torch.isinf(tl)):
                                     total_loss += tl.item()
                                     num_batches += 1
