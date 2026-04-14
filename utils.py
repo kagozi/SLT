@@ -355,6 +355,7 @@ class Trainer:
     def train_epoch(self, epoch):
         self.model.train()
         self._set_stage(epoch)
+        decoder_active = self.use_bart and (self.ctc_weight == 0 or self.stage >= 2)
         
         total_loss        = 0
         total_ctc         = 0
@@ -450,7 +451,7 @@ class Trainer:
 
                     # ── R-Drop: symmetric KL between two CTC forward passes ──
                     # (Liang et al., NeurIPS 2021 — α≈5 for sequence models)
-                    if self.rdrop_weight > 0:
+                    if self.rdrop_weight > 0 and not decoder_active:
                         if self.use_bart:
                             h2_rd, _ = self.model.encode(keypoints, mask)
                             logits2_rd = self.model.head(h2_rd)
@@ -467,7 +468,7 @@ class Trainer:
                             total_rdrop += rdrop_loss.item()
 
                     # ── Contrastive loss ──────────────────────────────────────
-                    if self.contrastive_weight > 0 and hasattr(self.model, 'contrastive_head'):
+                    if self.contrastive_weight > 0 and hasattr(self.model, 'contrastive_head') and not decoder_active:
                         aug1 = augment_keypoints(keypoints, mask)
                         aug2 = augment_keypoints(keypoints, mask)
                         h1, m1 = self.model.encode(aug1, mask.clone())
