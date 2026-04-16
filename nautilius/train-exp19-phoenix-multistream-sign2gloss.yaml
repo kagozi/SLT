@@ -1,0 +1,86 @@
+# Priority 2
+# Experiment 19: PHOENIX-2014-T — Multi-stream Sign2Gloss (CTC only)
+# Control run to isolate the effect of the multistream encoder against Exp 1.
+# Mirrors Exp 17's encoder/training setup as closely as possible while removing
+# the translation decoder and joint-training curriculum.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp19-phoenix-multistream-sign2gloss
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp19_phoenix_multistream_sign2gloss"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "1"
+          - "--grad_accum"
+          - "16"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "2e-4"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--multistream"
+          - "--ffn_expand"
+          - "4"
+          - "--label_smoothing"
+          - "0.1"
+          - "--ctc_smoothing"
+          - "0.1"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "4"
+            memory: "40Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "40Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
