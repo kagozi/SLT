@@ -1,17 +1,28 @@
-# Transfer Track A4
-# Experiment 10: How2Sign — Scratch Baseline (multistream control)
-# Same architecture family as Exps 7-9 but NO pretrained weights.
-# Control experiment: measures how much the multistream transfer runs benefit
-# from PHOENIX pretraining.
+# Experiment 20: YouTube-ASL Pretraining (multistream, CTC + BART)
+#
+# Pretrains the MultiStreamSignLanguageTransformer on YouTube-ASL
+# (~610K ASL-to-English sentences, 984 hours).  Uses joint CTC
+# (pseudo-gloss) + mBART translation objective — same setup as Exp 18
+# on How2Sign but on a 60x larger in-domain (ASL) corpus.
+#
+# The saved checkpoint is the pretraining source for Exp 21
+# (YouTube-ASL → How2Sign fine-tune), enabling a direct comparison
+# against:
+#   Exp 18 — How2Sign from scratch
+#   Exp 9  — PHOENIX → How2Sign
+#   Exp 21 — YouTube-ASL → How2Sign  (expected best)
+#
+# Depends on: /data/youtube_asl/ populated by download-youtube-asl-job
+# Checkpoint saved to: /data/experiments/models/exp20_youtube_asl_pretrain/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp10-transfer-scratch
+  name: train-exp20-youtube-asl-pretrain
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 259200
+  activeDeadlineSeconds: 1728000
   template:
     spec:
       restartPolicy: Never
@@ -21,15 +32,15 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "how2sign"
+          - "youtube_asl"
           - "--root_dir"
-          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
+          - "/data/youtube_asl"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp10_transfer_scratch"
+          - "exp20_youtube_asl_pretrain"
           - "--epochs"
-          - "100"
+          - "500"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -46,10 +57,23 @@ spec:
           - "--num_workers"
           - "2"
           - "--multistream"
+          - "--use_bart"
+          - "--ctc_weight"
+          - "0.3"
+          - "--freeze_bart_epochs"
+          - "0"
+          - "--ffn_expand"
+          - "4"
+          - "--lr"
+          - "1.5e-4"
           - "--dropout"
           - "0.3"
-          - "--lr"
-          - "1e-4"
+          - "--label_smoothing"
+          - "0.1"
+          - "--contrastive_weight"
+          - "0.05"
+          - "--ctc_smoothing"
+          - "0.0"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -66,12 +90,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "1"
-            memory: "6Gi"
+            cpu: "2"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "1"
-            memory: "8Gi"
+            cpu: "2"
+            memory: "19Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

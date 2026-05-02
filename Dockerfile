@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir \
       ultralytics \
       einops sentencepiece regex scikit-learn \
       omegaconf hydra-core tensorboard sacrebleu nltk \
-      wandb kaggle rarfile sacrebleu \
+      wandb kaggle rarfile sacrebleu yt-dlp \
       "transformers==4.44.2" \
       spacy && \
     python -m spacy download en_core_web_sm

@@ -1,17 +1,25 @@
-# Transfer Track A4
-# Experiment 10: How2Sign — Scratch Baseline (multistream control)
-# Same architecture family as Exps 7-9 but NO pretrained weights.
-# Control experiment: measures how much the multistream transfer runs benefit
-# from PHOENIX pretraining.
+# Experiment 21: YouTube-ASL → How2Sign Fine-tune (full fine-tune, multistream)
+#
+# Fine-tunes the Exp 20 YouTube-ASL checkpoint on How2Sign with the full
+# multistream + CTC + mBART pipeline.  All encoder layers are trainable
+# (freeze_strategy=none) at a reduced LR to avoid catastrophic forgetting.
+#
+# Target comparison (How2Sign BLEU-4):
+#   Exp 18 (scratch)              — baseline
+#   Exp 9  (PHOENIX → How2Sign)   — cross-lingual transfer
+#   Exp 21 (YouTube-ASL → H2S)   — expected strongest (same language, massive scale)
+#
+# Depends on: Exp 20 checkpoint at
+#   /data/experiments/models/exp20_youtube_asl_pretrain/best_exp20_youtube_asl_pretrain.pt
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp10-transfer-scratch
+  name: train-exp21-youtube-asl-to-how2sign
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 259200
+  activeDeadlineSeconds: 864000
   template:
     spec:
       restartPolicy: Never
@@ -27,9 +35,9 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp10_transfer_scratch"
+          - "exp21_youtube_asl_to_how2sign"
           - "--epochs"
-          - "100"
+          - "200"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -46,10 +54,27 @@ spec:
           - "--num_workers"
           - "2"
           - "--multistream"
+          - "--use_bart"
+          - "--ctc_weight"
+          - "0.3"
+          - "--freeze_bart_epochs"
+          - "0"
+          - "--ffn_expand"
+          - "4"
+          - "--lr"
+          - "5e-5"
           - "--dropout"
           - "0.3"
-          - "--lr"
-          - "1e-4"
+          - "--label_smoothing"
+          - "0.1"
+          - "--contrastive_weight"
+          - "0.05"
+          - "--ctc_smoothing"
+          - "0.0"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp20_youtube_asl_pretrain/best_exp20_youtube_asl_pretrain.pt"
+          - "--freeze_strategy"
+          - "none"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -71,7 +96,7 @@ spec:
             nvidia.com/gpu: "1"
           limits:
             cpu: "1"
-            memory: "8Gi"
+            memory: "7Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

@@ -38,9 +38,9 @@ spec:
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "4"
+          - "16"
           - "--grad_accum"
-          - "4"
+          - "2"
           - "--fp16"
           - "--dim"
           - "256"
@@ -49,7 +49,7 @@ spec:
           - "--dropout"
           - "0.3"
           - "--num_workers"
-          - "4"
+          - "2"
           - "--multistream"
           - "--use_bart"
           - "--ctc_weight"
@@ -80,12 +80,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "4"
-            memory: "40Gi"
+            cpu: "2"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "4"
-            memory: "40Gi"
+            cpu: "2"
+            memory: "19Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

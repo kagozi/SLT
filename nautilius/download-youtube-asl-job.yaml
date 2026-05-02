@@ -1,0 +1,67 @@
+# YouTube-ASL Download + Extraction Job (sharded)
+#
+# Each pod handles 1/TOTAL_SHARDS of the video IDs.
+# Run 20 pods in parallel by applying this file 20 times with
+# different SHARD_IDX values, e.g.:
+#   for i in $(seq 0 19); do
+#     sed "s/__SHARD__/$i/" download-youtube-asl-job.yaml | kubectl apply -f -
+#   done
+#
+# This pod handles shard SHARD_IDX=0 by default.
+#
+# Requires: raw_metadata.csv already present at /data/youtube_asl/raw_metadata.csv
+# Output  : /data/youtube_asl/keypoints/{train,val,test}/*.npy
+#           /data/youtube_asl/metadata/youtube_asl_{train,val,test}.csv
+#
+# Storage note:
+#   Videos are downloaded to /data/youtube_asl/videos_tmp/ and deleted
+#   immediately after keypoint extraction.  Peak disk usage per pod is
+#   ~15-20 GB (a few videos buffered at once).  Final keypoints only: ~80-100 GB.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-youtube-asl-shard-0
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: downloader
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "download_youtube_asl.py"]
+        args:
+          - "--metadata"
+          - "/data/youtube_asl/raw_metadata.csv"
+          - "--out_dir"
+          - "/data/youtube_asl"
+          - "--shard_idx"
+          - "0"
+          - "--total_shards"
+          - "20"
+          - "--val_pct"
+          - "0.10"
+          - "--test_pct"
+          - "0.10"
+        env:
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+          limits:
+            cpu: "2"
+            memory: "10Gi"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

@@ -71,6 +71,7 @@ def _fig_to_wandb(fig) -> wandb.Image:
 
 from dataset import PhoenixSignDataset
 from dataset_how2sign import How2SignDataset
+from dataset_youtube_asl import YouTubeASLDataset
 from models import SignLanguageTransformer, MultiStreamSignLanguageTransformer
 from utils import GlossTokenizer, Trainer, collate_fn, ctc_greedy_decode, ctc_beam_decode
 
@@ -487,8 +488,8 @@ def main():
     
     # Data
     parser.add_argument('--dataset', type=str, default='phoenix',
-                        choices=['phoenix', 'how2sign'],
-                        help='Dataset to use: phoenix or how2sign')
+                        choices=['phoenix', 'how2sign', 'youtube_asl'],
+                        help='Dataset to use: phoenix, how2sign, or youtube_asl')
     parser.add_argument('--root_dir', type=str, default=None,
                         help='Dataset root (auto-set per dataset if not provided)')
     parser.add_argument('--batch_size', type=int, default=20)
@@ -585,9 +586,11 @@ def main():
     if args.root_dir is None:
         if args.dataset == 'phoenix':
             args.root_dir = '/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T'
+        elif args.dataset == 'youtube_asl':
+            args.root_dir = '/data/youtube_asl'
         else:
             args.root_dir = '/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features'
-    
+
     if args.max_frames is None:
         args.max_frames = 250 if args.dataset == 'phoenix' else 300
     
@@ -650,6 +653,22 @@ def main():
             df = pd.read_csv(csv, sep='|')
             all_gloss.extend(df['orth'].dropna().tolist())
         tokenizer = GlossTokenizer(all_gloss, min_freq=1)
+    elif args.dataset == 'youtube_asl':
+        # YouTube-ASL: build tokenizer from PSEUDOGLOSS column in train CSV.
+        meta_dir = Path(args.root_dir) / 'metadata'
+        pseudo_csv = meta_dir / 'youtube_asl_train.csv'
+        pseudo_glosses = []
+        if pseudo_csv.exists():
+            df_yt = pd.read_csv(pseudo_csv, sep='\t')
+            df_yt.columns = [c.strip() for c in df_yt.columns]
+            if 'PSEUDOGLOSS' in df_yt.columns:
+                pseudo_glosses = df_yt['PSEUDOGLOSS'].dropna().tolist()
+        if pseudo_glosses:
+            tokenizer = GlossTokenizer(pseudo_glosses, min_freq=2)
+            print(f"  YouTubeASL pseudogloss tokenizer: {tokenizer.vocab_size} tokens")
+        else:
+            print("  YouTubeASL: no PSEUDOGLOSS column — using dummy tokenizer (glossless mode)")
+            tokenizer = GlossTokenizer(["DUMMY"], min_freq=1)
     else:
         # How2Sign: build tokenizer from PSEUDOGLOSS column if present.
         # CSVs live in metadata/ inside the HF cache root.
@@ -678,6 +697,13 @@ def main():
                                      tokenizer, bart_tokenizer)
         test_ds = PhoenixSignDataset(args.root_dir, 'test', args.max_frames, False,
                                       tokenizer, bart_tokenizer)
+    elif args.dataset == 'youtube_asl':
+        train_ds = YouTubeASLDataset(args.root_dir, 'train', args.max_frames, True,
+                                      tokenizer, bart_tokenizer)
+        val_ds = YouTubeASLDataset(args.root_dir, 'val', args.max_frames, False,
+                                    tokenizer, bart_tokenizer)
+        test_ds = YouTubeASLDataset(args.root_dir, 'test', args.max_frames, False,
+                                     tokenizer, bart_tokenizer)
     else:
         train_ds = How2SignDataset(args.root_dir, 'train', args.max_frames, True,
                                     tokenizer, bart_tokenizer)
