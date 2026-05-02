@@ -9,7 +9,8 @@
 #
 # This pod handles shard SHARD_IDX=0 by default.
 #
-# Requires: raw_metadata.csv already present at /data/youtube_asl/raw_metadata.csv
+# Requires: video_ids.txt already present at /data/youtube_asl/video_ids.txt
+#           (plain-text file from gs://gresearch/youtube-asl, one ID per line)
 # Output  : /data/youtube_asl/keypoints/{train,val,test}/*.npy
 #           /data/youtube_asl/metadata/youtube_asl_{train,val,test}.csv
 #
@@ -34,8 +35,8 @@ spec:
         image: ghcr.io/kagozi/slt:latest
         command: ["python", "download_youtube_asl.py"]
         args:
-          - "--metadata"
-          - "/data/youtube_asl/raw_metadata.csv"
+          - "--video_ids"
+          - "/data/youtube_asl/video_ids.txt"
           - "--out_dir"
           - "/data/youtube_asl"
           - "--shard_idx"
