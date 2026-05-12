@@ -75,6 +75,8 @@ spec:
           - "/data/experiments/models/exp20_youtube_asl_pretrain/best_exp20_youtube_asl_pretrain.pt"
           - "--freeze_strategy"
           - "none"
+          - "--unglossed_ctc_target"
+          - "translation_keywords"
         env:
         - name: WANDB_API_KEY
           valueFrom:

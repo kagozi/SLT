@@ -1,6 +1,6 @@
-# Experiment 6: How2Sign — Sign2Gloss (CTC-only, POS pseudo-glosses as labels)
-# No BART. Encoder + CTC head trained to recognise pseudo-gloss sequences.
-# Run AFTER generate-pseudoglosses job writes PSEUDOGLOSS column to annotations CSVs.
+# Experiment 6: How2Sign — unglossed CTC baseline
+# How2Sign has no real glosses, so train CTC on normalized English content-word
+# targets from SENTENCE instead of POS pseudo-gloss artifacts.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -26,19 +26,29 @@ spec:
           - "--exp_name"
           - "exp6_how2sign_sign2gloss"
           - "--epochs"
-          - "200"
+          - "300"
           - "--decode"
           - "beam"
           - "--beam_width"
           - "10"
           - "--batch_size"
           - "16"
+          - "--grad_accum"
+          - "2"
+          - "--fp16"
           - "--dim"
           - "256"
           - "--max_frames"
           - "300"
           - "--num_workers"
-          - "4"
+          - "2"
+          - "--multistream"
+          - "--lr"
+          - "2e-4"
+          - "--dropout"
+          - "0.3"
+          - "--unglossed_ctc_target"
+          - "translation_keywords"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -47,12 +57,12 @@ spec:
               key: api-key
         resources:
           requests:
-            cpu: "4"
-            memory: "16Gi"
+            cpu: "1"
+            memory: "6Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "4"
-            memory: "16Gi"
+            cpu: "1"
+            memory: "6Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

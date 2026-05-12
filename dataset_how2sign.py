@@ -40,7 +40,11 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from keypoint_utils import normalize_flat_keypoints, normalize_selected_keypoints
-from translation_utils import encode_translation_target
+from translation_utils import (
+    encode_translation_target,
+    normalize_translation_text,
+    translation_keywords,
+)
 
 
 # ── Landmark selection ───────────────────────────────────────────────────────
@@ -186,13 +190,14 @@ class How2SignDataset(Dataset):
     COORDS_PER_JOINT = 3
 
     def __init__(self, root_dir, split='train', max_frames=300, augment=True,
-                 tokenizer=None, bart_tokenizer=None):
+                 tokenizer=None, bart_tokenizer=None, ctc_target='pseudogloss'):
         self.root_dir       = Path(root_dir)
         self.split          = split
         self.max_frames     = max_frames
         self.augment        = augment and (split == 'train')
         self.tokenizer      = tokenizer
         self.bart_tokenizer = bart_tokenizer
+        self.ctc_target     = ctc_target
 
         # ── CSV: realigned only ───────────────────────────────────────────────
         meta_dir = self.root_dir / 'metadata'
@@ -249,8 +254,14 @@ class How2SignDataset(Dataset):
         if self.augment:
             keypoints = self._augment(keypoints)
 
-        # Gloss (pseudo-gloss or dummy)
-        gloss_text    = sample['pseudogloss']
+        # CTC target. How2Sign has no true glosses, so allow alternatives that
+        # train/evaluate against the available English supervision directly.
+        if self.ctc_target == 'translation':
+            gloss_text = normalize_translation_text(sample['sentence'])
+        elif self.ctc_target == 'translation_keywords':
+            gloss_text = translation_keywords(sample['sentence'])
+        else:
+            gloss_text = sample['pseudogloss']
         gloss_indices = torch.tensor([1], dtype=torch.long)
         if self.tokenizer and gloss_text:
             gloss_indices = self.tokenizer.encode(gloss_text)

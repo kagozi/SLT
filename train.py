@@ -58,7 +58,12 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import wandb
-from translation_utils import resolve_translation_config, configure_tokenizer_for_target
+from translation_utils import (
+    resolve_translation_config,
+    configure_tokenizer_for_target,
+    normalize_translation_text,
+    translation_keywords,
+)
 
 
 def _fig_to_wandb(fig) -> wandb.Image:
@@ -214,15 +219,14 @@ class SignLanguageEvaluator:
         def wer_single(p, t):
             pw, tw = p.split(), t.split()
             if not tw: return 0.0
-            d = np.zeros((len(tw)+1, len(pw)+1))
-            for i in range(len(tw)+1): d[i,0] = i * 3
-            for j in range(len(pw)+1): d[0,j] = j * 3
+            d = np.zeros((len(tw)+1, len(pw)+1), dtype=np.float32)
+            for i in range(len(tw)+1): d[i,0] = i
+            for j in range(len(pw)+1): d[0,j] = j
             for i in range(1, len(tw)+1):
                 for j in range(1, len(pw)+1):
-                    cost = 0 if tw[i-1] == pw[j-1] else 4
-                    d[i,j] = min(d[i-1,j]+3, d[i,j-1]+3, d[i-1,j-1]+cost)
-            mc = 4 * max(len(tw), len(pw))
-            return d[len(tw), len(pw)] / mc if mc > 0 else 0.0
+                    cost = 0 if tw[i-1] == pw[j-1] else 1
+                    d[i,j] = min(d[i-1,j]+1, d[i,j-1]+1, d[i-1,j-1]+cost)
+            return d[len(tw), len(pw)] / len(tw)
         return float(np.mean([wer_single(p, t) for p, t in zip(preds, targets)]))
 
     @staticmethod
@@ -496,6 +500,11 @@ def main():
     parser.add_argument('--max_frames', type=int, default=None,
                         help='Max frames (default: 250 for phoenix, 300 for how2sign)')
     parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--unglossed_ctc_target', type=str, default='pseudogloss',
+                        choices=['pseudogloss', 'translation', 'translation_keywords'],
+                        help='CTC target for datasets without true glosses. '
+                             'pseudogloss uses PSEUDOGLOSS, translation uses normalized '
+                             'English text, translation_keywords uses content-word English.')
     
     # Training
     parser.add_argument('--epochs', type=int, default=100)
@@ -654,37 +663,48 @@ def main():
             all_gloss.extend(df['orth'].dropna().tolist())
         tokenizer = GlossTokenizer(all_gloss, min_freq=1)
     elif args.dataset == 'youtube_asl':
-        # YouTube-ASL: build tokenizer from PSEUDOGLOSS column in train CSV.
+        # YouTube-ASL has no true glosses. Build CTC vocab from the selected
+        # weak target, defaulting to legacy PSEUDOGLOSS for compatibility.
         meta_dir = Path(args.root_dir) / 'metadata'
         pseudo_csv = meta_dir / 'youtube_asl_train.csv'
-        pseudo_glosses = []
+        ctc_texts = []
         if pseudo_csv.exists():
             df_yt = pd.read_csv(pseudo_csv, sep='\t')
             df_yt.columns = [c.strip() for c in df_yt.columns]
-            if 'PSEUDOGLOSS' in df_yt.columns:
-                pseudo_glosses = df_yt['PSEUDOGLOSS'].dropna().tolist()
-        if pseudo_glosses:
-            tokenizer = GlossTokenizer(pseudo_glosses, min_freq=2)
-            print(f"  YouTubeASL pseudogloss tokenizer: {tokenizer.vocab_size} tokens")
+            if args.unglossed_ctc_target == 'translation':
+                ctc_texts = df_yt['SENTENCE'].fillna('').map(normalize_translation_text).tolist()
+            elif args.unglossed_ctc_target == 'translation_keywords':
+                ctc_texts = df_yt['SENTENCE'].fillna('').map(translation_keywords).tolist()
+            elif 'PSEUDOGLOSS' in df_yt.columns:
+                ctc_texts = df_yt['PSEUDOGLOSS'].dropna().tolist()
+        if ctc_texts:
+            tokenizer = GlossTokenizer(ctc_texts, min_freq=2)
+            print(f"  YouTubeASL {args.unglossed_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
         else:
-            print("  YouTubeASL: no PSEUDOGLOSS column — using dummy tokenizer (glossless mode)")
+            print("  YouTubeASL: no CTC targets — using dummy tokenizer (glossless mode)")
             tokenizer = GlossTokenizer(["DUMMY"], min_freq=1)
     else:
-        # How2Sign: build tokenizer from PSEUDOGLOSS column if present.
+        # How2Sign has no true glosses. Build CTC vocab from the selected weak
+        # target. translation/translation_keywords evaluate against available
+        # English supervision instead of POS pseudo-gloss artifacts.
         # CSVs live in metadata/ inside the HF cache root.
         meta_dir = Path(args.root_dir) / 'metadata'
         pseudo_csv = meta_dir / 'how2sign_realigned_train.csv'
-        pseudo_glosses = []
+        ctc_texts = []
         if pseudo_csv.exists():
             df_h2s = pd.read_csv(pseudo_csv, sep='\t')
             df_h2s.columns = [c.strip() for c in df_h2s.columns]
-            if 'PSEUDOGLOSS' in df_h2s.columns:
-                pseudo_glosses = df_h2s['PSEUDOGLOSS'].dropna().tolist()
-        if pseudo_glosses:
-            tokenizer = GlossTokenizer(pseudo_glosses, min_freq=2)
-            print(f"  How2Sign pseudogloss tokenizer: {tokenizer.vocab_size} tokens")
+            if args.unglossed_ctc_target == 'translation':
+                ctc_texts = df_h2s['SENTENCE'].fillna('').map(normalize_translation_text).tolist()
+            elif args.unglossed_ctc_target == 'translation_keywords':
+                ctc_texts = df_h2s['SENTENCE'].fillna('').map(translation_keywords).tolist()
+            elif 'PSEUDOGLOSS' in df_h2s.columns:
+                ctc_texts = df_h2s['PSEUDOGLOSS'].dropna().tolist()
+        if ctc_texts:
+            tokenizer = GlossTokenizer(ctc_texts, min_freq=2)
+            print(f"  How2Sign {args.unglossed_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
         else:
-            print("  How2Sign: no PSEUDOGLOSS column — using dummy tokenizer (glossless mode)")
+            print("  How2Sign: no CTC targets — using dummy tokenizer (glossless mode)")
             tokenizer = GlossTokenizer(["DUMMY"], min_freq=1)
     
     # ─── Datasets ───
@@ -699,18 +719,24 @@ def main():
                                       tokenizer, bart_tokenizer)
     elif args.dataset == 'youtube_asl':
         train_ds = YouTubeASLDataset(args.root_dir, 'train', args.max_frames, True,
-                                      tokenizer, bart_tokenizer)
+                                      tokenizer, bart_tokenizer,
+                                      ctc_target=args.unglossed_ctc_target)
         val_ds = YouTubeASLDataset(args.root_dir, 'val', args.max_frames, False,
-                                    tokenizer, bart_tokenizer)
+                                    tokenizer, bart_tokenizer,
+                                    ctc_target=args.unglossed_ctc_target)
         test_ds = YouTubeASLDataset(args.root_dir, 'test', args.max_frames, False,
-                                     tokenizer, bart_tokenizer)
+                                     tokenizer, bart_tokenizer,
+                                     ctc_target=args.unglossed_ctc_target)
     else:
         train_ds = How2SignDataset(args.root_dir, 'train', args.max_frames, True,
-                                    tokenizer, bart_tokenizer)
+                                    tokenizer, bart_tokenizer,
+                                    ctc_target=args.unglossed_ctc_target)
         val_ds = How2SignDataset(args.root_dir, 'val', args.max_frames, False,
-                                  tokenizer, bart_tokenizer)
+                                  tokenizer, bart_tokenizer,
+                                  ctc_target=args.unglossed_ctc_target)
         test_ds = How2SignDataset(args.root_dir, 'test', args.max_frames, False,
-                                   tokenizer, bart_tokenizer)
+                                   tokenizer, bart_tokenizer,
+                                   ctc_target=args.unglossed_ctc_target)
     
     # ── Low-data subset sampling ──
     if args.subset_pct < 100.0:

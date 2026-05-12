@@ -50,6 +50,8 @@ spec:
           - "0.3"
           - "--lr"
           - "1e-4"
+          - "--unglossed_ctc_target"
+          - "translation_keywords"
         env:
         - name: WANDB_API_KEY
           valueFrom:

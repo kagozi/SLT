@@ -18,3 +18,6 @@ paper/*
 .DS_Store
 TRANSFER_LEARNING.md
 results_local_*
+*.png
+draw_detail_architecture.py
+draw_architecture.py

@@ -30,9 +30,12 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from dataset_how2sign import process_holistic      # reuse exact same pipeline
 from keypoint_utils import normalize_flat_keypoints
-from translation_utils import encode_translation_target
+from translation_utils import (
+    encode_translation_target,
+    normalize_translation_text,
+    translation_keywords,
+)
 
 
 class YouTubeASLDataset(Dataset):
@@ -52,13 +55,14 @@ class YouTubeASLDataset(Dataset):
     COORDS_PER_JOINT = 3
 
     def __init__(self, root_dir, split='train', max_frames=300, augment=True,
-                 tokenizer=None, bart_tokenizer=None):
+                 tokenizer=None, bart_tokenizer=None, ctc_target='pseudogloss'):
         self.root_dir       = Path(root_dir)
         self.split          = split
         self.max_frames     = max_frames
         self.augment        = augment and (split == 'train')
         self.tokenizer      = tokenizer
         self.bart_tokenizer = bart_tokenizer
+        self.ctc_target     = ctc_target
 
         meta_dir = self.root_dir / 'metadata'
         csv_path = meta_dir / f'youtube_asl_{split}.csv'
@@ -72,11 +76,15 @@ class YouTubeASLDataset(Dataset):
 
         self.samples = []
         missing = 0
+        corrupt = 0
         for _, row in df.iterrows():
             name     = str(row['SENTENCE_NAME']).strip()
             npy_path = kp_dir / f'{name}.npy'
             if not npy_path.exists():
                 missing += 1
+                continue
+            if npy_path.stat().st_size == 0:
+                corrupt += 1
                 continue
             self.samples.append({
                 'npy_path':      npy_path,
@@ -90,16 +98,32 @@ class YouTubeASLDataset(Dataset):
         if missing:
             print(f'  Warning: YouTubeASL [{split}]: '
                   f'{missing}/{len(df)} rows have no matching .npy')
+        if corrupt:
+            print(f'  Warning: YouTubeASL [{split}]: '
+                  f'{corrupt} zero-byte .npy files skipped')
         print(f'  YouTubeASL [{split}]: {len(self.samples)} samples loaded')
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        sample = self.samples[idx]
-
-        raw = np.load(sample['npy_path'])              # (T, 543, 3)
-        kps = process_holistic(raw, self.max_frames)   # (max_frames, 225)
+        # Retry up to 5 times in case of corrupt/truncated .npy files
+        for attempt in range(5):
+            sample = self.samples[idx]
+            try:
+                kps = np.load(sample['npy_path'])      # (T, 225) — pre-processed at extraction
+                break
+            except (EOFError, ValueError, OSError) as e:
+                print(f'  Warning: corrupt npy {sample["npy_path"].name}: {e} — skipping')
+                idx = random.randint(0, len(self.samples) - 1)
+        else:
+            # All retries failed; return a zeroed sample
+            kps = np.zeros((self.max_frames, 225), dtype=np.float32)
+        T = kps.shape[0]
+        if T < self.max_frames:
+            kps = np.vstack([kps, np.zeros((self.max_frames - T, 225), dtype=np.float32)])
+        else:
+            kps = kps[:self.max_frames]
         kps = normalize_flat_keypoints(kps.astype(np.float32))
 
         num_real_frames = max(
@@ -111,7 +135,12 @@ class YouTubeASLDataset(Dataset):
         if self.augment:
             keypoints = self._augment(keypoints)
 
-        gloss_text    = sample['pseudogloss']
+        if self.ctc_target == 'translation':
+            gloss_text = normalize_translation_text(sample['sentence'])
+        elif self.ctc_target == 'translation_keywords':
+            gloss_text = translation_keywords(sample['sentence'])
+        else:
+            gloss_text = sample['pseudogloss']
         gloss_indices = torch.tensor([1], dtype=torch.long)
         if self.tokenizer and gloss_text:
             gloss_indices = self.tokenizer.encode(gloss_text)

@@ -56,6 +56,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from dataset_how2sign import process_holistic
+
 
 # ── VTT / subtitle parsing ───────────────────────────────────────────────────
 
@@ -209,10 +211,11 @@ def prepare_metadata(video_ids_file: Path, out_dir: Path,
     failed_caption = 0
 
     for video_id in tqdm(raw_ids, desc='fetch captions', unit='video'):
-        cache_file = cache_dir / f'{video_id}.parquet'
+        cache_file = cache_dir / f'{video_id}.json'
         if cache_file.exists():
-            cached = pd.read_parquet(cache_file)
-            rows.append(cached)
+            cached = pd.read_json(cache_file, orient='records')
+            if len(cached):
+                rows.append(cached)
             continue
 
         with tempfile.TemporaryDirectory(dir=cache_dir) as tmp:
@@ -220,9 +223,8 @@ def prepare_metadata(video_ids_file: Path, out_dir: Path,
 
         if not segs:
             failed_caption += 1
-            # Write empty parquet so we don't retry this video
-            pd.DataFrame(columns=['video_id', 'seg_idx', 'start', 'end', 'caption']
-                         ).to_parquet(cache_file, index=False)
+            # Write empty JSON so we don't retry this video
+            cache_file.write_text('[]')
             continue
 
         seg_df = pd.DataFrame([
@@ -230,7 +232,7 @@ def prepare_metadata(video_ids_file: Path, out_dir: Path,
              'start': s['start'], 'end': s['end'], 'caption': s['text']}
             for i, s in enumerate(segs)
         ])
-        seg_df.to_parquet(cache_file, index=False)
+        cache_file.write_text(seg_df.to_json(orient='records'))
         rows.append(seg_df)
 
     print(f'  Captions fetched. Failed: {failed_caption}/{len(raw_ids)} videos')
@@ -357,7 +359,6 @@ def _yt_download(video_id: str, out_path: Path, retries: int = 3) -> bool:
         'yt-dlp',
         '--format', 'bestvideo[height<=360][ext=mp4]/bestvideo[height<=360]/best[height<=360]',
         '--no-playlist',
-        '--no-audio',
         '--quiet',
         '--output', str(out_path),
         url,
@@ -385,12 +386,16 @@ def _ffmpeg_trim(video_path: Path, start: float, end: float,
         'ffmpeg', '-y', '-loglevel', 'error',
         '-ss', str(start), '-i', str(video_path),
         '-t', str(dur),
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+        '-c:v', 'copy',
         '-an',
+        '-avoid_negative_ts', 'make_zero',
         str(clip_path),
     ]
     result = subprocess.run(cmd, timeout=120, capture_output=True)
     if result.returncode != 0 or not clip_path.exists():
+        stderr = result.stderr.decode('utf-8', errors='replace').strip()
+        if stderr:
+            tqdm.write(f'  ffmpeg error for {video_path.name} [{start}-{end}]: {stderr[:200]}')
         return None
     return clip_path
 
@@ -456,7 +461,9 @@ def process_shard(dfs: dict, out_dir: Path,
                         errors += 1
                         continue
 
-                    arr = extract_holistic_raw(str(clip_path))  # (T, 543, 3)
+                    raw = extract_holistic_raw(str(clip_path))   # (T, 543, 3)
+                    T = raw.shape[0]
+                    arr = process_holistic(raw, T)               # (T, 225) no padding
                     np.save(npy_path, arr)
                     clip_path.unlink(missing_ok=True)
                     done += 1
@@ -492,13 +499,6 @@ def main():
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    # pyarrow needed for parquet caption cache
-    try:
-        import pyarrow  # noqa: F401
-    except ImportError:
-        subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'pyarrow'],
-                       check=True)
 
     print('=== Step 1: Fetch captions + build metadata ===')
     dfs = prepare_metadata(

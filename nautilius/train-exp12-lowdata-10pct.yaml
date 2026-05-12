@@ -56,6 +56,8 @@ spec:
           - "1e-4"
           - "--subset_pct"
           - "10"
+          - "--unglossed_ctc_target"
+          - "translation_keywords"
         env:
         - name: WANDB_API_KEY
           valueFrom:

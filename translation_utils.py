@@ -1,5 +1,37 @@
 from typing import Optional
+import re
 import torch
+
+
+_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "by", "for",
+    "from", "had", "has", "have", "he", "her", "hers", "him", "his", "i",
+    "if", "in", "is", "it", "its", "me", "my", "of", "on", "or", "our",
+    "ours", "she", "so", "that", "the", "their", "theirs", "them", "then",
+    "there", "these", "they", "this", "those", "to", "was", "we", "were",
+    "what", "when", "where", "which", "who", "will", "with", "you", "your",
+    "yours",
+}
+
+
+def normalize_translation_text(text: str) -> str:
+    """Normalize spoken-language text for word-level CTC targets."""
+    text = str(text or "").lower()
+    text = re.sub(r"[^a-z0-9'\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.upper()
+
+
+def translation_keywords(text: str, min_tokens: int = 1) -> str:
+    """Lightweight content-word target for unglossed CTC training."""
+    normalized = normalize_translation_text(text)
+    tokens = [
+        tok for tok in normalized.split()
+        if tok.lower() not in _STOPWORDS and not tok.isdigit()
+    ]
+    if len(tokens) < min_tokens:
+        tokens = normalized.split()
+    return " ".join(tokens)
 
 
 def resolve_translation_config(dataset: str, requested_model: str = "auto"):
