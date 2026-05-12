@@ -41,11 +41,40 @@ class CTCLoss(nn.Module):
 
     def forward(self, logits, targets, input_lengths, target_lengths):
         log_probs = F.log_softmax(logits, dim=-1)
+        if targets.dim() == 2:
+            # CUDA CTC is more robust with concatenated 1-D targets. Build the
+            # packed target explicitly from padded (B, S) batches.
+            pieces = [
+                targets[i, :int(length)].contiguous()
+                for i, length in enumerate(target_lengths.tolist())
+                if int(length) > 0
+            ]
+            targets = torch.cat(pieces, dim=0) if pieces else targets.new_empty((0,))
         hard_loss = self.ctc_loss(log_probs, targets, input_lengths, target_lengths)
         if self.smoothing > 0:
             smooth_loss = -log_probs.mean()   # uniform prior over all timesteps × vocab
             return (1.0 - self.smoothing) * hard_loss + self.smoothing * smooth_loss
         return hard_loss
+
+
+def _ctc_batch_is_valid(logits_ctc, targets, input_lengths, target_lengths, num_classes):
+    """Validate CTC tensor contracts before calling CUDA CTC."""
+    if targets.dim() != 2:
+        return False, 'targets must be padded 2-D tensor'
+    if input_lengths.numel() != targets.size(0) or target_lengths.numel() != targets.size(0):
+        return False, 'length vector size does not match batch size'
+    if not torch.isfinite(logits_ctc).all():
+        return False, 'non-finite logits'
+    if (input_lengths <= 0).any() or (input_lengths > logits_ctc.size(0)).any():
+        return False, 'invalid input_lengths'
+    if (target_lengths <= 0).any() or (target_lengths > targets.size(1)).any():
+        return False, 'invalid target_lengths'
+    if (input_lengths < target_lengths).any():
+        return False, 'target longer than input'
+    active = targets[targets != 0]
+    if active.numel() and ((active < 0).any() or (active >= num_classes).any()):
+        return False, 'target id outside vocabulary'
+    return True, ''
 
 
 def augment_keypoints(
@@ -80,6 +109,7 @@ def collate_fn(batch):
     """Custom collate for variable-length sequences."""
     keypoints = [item['keypoints'] for item in batch]
     glosses = [item['gloss'] for item in batch]
+    gloss_lengths = torch.tensor([len(item['gloss']) for item in batch], dtype=torch.long)
     num_frames = [item['num_frames'] for item in batch]
 
     keypoints_padded = nn.utils.rnn.pad_sequence(keypoints, batch_first=True)
@@ -95,6 +125,7 @@ def collate_fn(batch):
         'keypoints': keypoints_padded,
         'mask': mask,
         'gloss': glosses_padded,
+        'gloss_lengths': gloss_lengths,
         'gloss_text': [item['gloss_text'] for item in batch],
         'translation': [item['translation'] for item in batch],
         'name': [item['name'] for item in batch],
@@ -447,12 +478,26 @@ class Trainer:
                     # CTC loss
                     logits_ctc = logits.float().permute(1, 0, 2)
                     input_lengths = mask_out.sum(dim=1).long().cpu()
-                    target_lengths = (targets != 0).sum(dim=1).long().cpu()
+                    target_lengths = batch.get('gloss_lengths')
+                    target_lengths = (
+                        target_lengths.long().cpu()
+                        if target_lengths is not None
+                        else (targets != 0).sum(dim=1).long().cpu()
+                    )
 
-                    if (target_lengths == 0).any() or (input_lengths < target_lengths).any():
+                    valid_ctc, reason = _ctc_batch_is_valid(
+                        logits_ctc, targets, input_lengths, target_lengths, logits.size(-1)
+                    )
+                    if not valid_ctc:
+                        if batch_idx % 50 == 0:
+                            print(f'  ⚠️ Skipping invalid CTC batch {batch_idx}: {reason}')
                         continue
 
-                    ctc_loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
+                    try:
+                        ctc_loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
+                    except RuntimeError as e:
+                        print(f'  ⚠️ Skipping CTC batch {batch_idx} after CTCLoss error: {e}')
+                        continue
 
                     if torch.isnan(ctc_loss) or torch.isinf(ctc_loss):
                         continue
@@ -686,13 +731,25 @@ class Trainer:
             if self.ctc_weight > 0:
                 logits_ctc = logits.permute(1, 0, 2)
                 input_lengths = mask_out.sum(dim=1).long().cpu()
-                target_lengths = (targets != 0).sum(dim=1).long().cpu()
+                target_lengths = batch.get('gloss_lengths')
+                target_lengths = (
+                    target_lengths.long().cpu()
+                    if target_lengths is not None
+                    else (targets != 0).sum(dim=1).long().cpu()
+                )
 
-                if (target_lengths > 0).all() and (input_lengths >= target_lengths).all():
-                    loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
-                    if not (torch.isnan(loss) or torch.isinf(loss)):
-                        total_loss += loss.item()
-                        num_batches += 1
+                valid_ctc, _ = _ctc_batch_is_valid(
+                    logits_ctc, targets, input_lengths, target_lengths, logits.size(-1)
+                )
+                if valid_ctc:
+                    try:
+                        loss = self.criterion(logits_ctc, targets, input_lengths, target_lengths)
+                    except RuntimeError:
+                        loss = None
+                    if loss is not None:
+                        if not (torch.isnan(loss) or torch.isinf(loss)):
+                            total_loss += loss.item()
+                            num_batches += 1
 
                 # CTC decode
                 if decode_mode == 'beam':

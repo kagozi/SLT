@@ -11,6 +11,13 @@ _STOPWORDS = {
     "there", "these", "they", "this", "those", "to", "was", "we", "were",
     "what", "when", "where", "which", "who", "will", "with", "you", "your",
     "yours",
+    # High-frequency instructional/caption filler in How2Sign/YouTube-ASL.
+    "actually", "again", "also", "basically", "can", "could", "gonna", "going",
+    "got", "guess", "just", "kind", "let", "let's", "like", "little", "look",
+    "make", "maybe", "mean", "need", "now", "okay", "really", "right", "say",
+    "see", "sort", "thing", "things", "think", "try", "use", "want", "way",
+    "we're", "i'm", "you're", "that's", "it's", "don't", "doesn't", "can't",
+    "i'll", "we'll", "you'll",
 }
 
 
