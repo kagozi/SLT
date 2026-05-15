@@ -21,3 +21,4 @@ results_local_*
 *.png
 draw_detail_architecture.py
 draw_architecture.py
+results/*

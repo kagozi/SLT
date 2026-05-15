@@ -584,6 +584,9 @@ def main():
                              'to reduce catastrophic forgetting.')
     parser.add_argument('--joint_bart_lr_scale', type=float, default=0.5,
                         help='LR multiplier for seq2seq params during full joint stage.')
+    parser.add_argument('--early_stop_patience', type=int, default=0,
+                        help='Stop training after this many epochs without validation '
+                             'score improvement. 0 disables early stopping.')
 
     args = parser.parse_args()
     
@@ -846,6 +849,7 @@ def main():
             bart_lr=args.lr * 0.05,
             joint_encoder_lr_scale=args.joint_encoder_lr_scale,
             joint_bart_lr_scale=args.joint_bart_lr_scale,
+            early_stop_patience=args.early_stop_patience,
         )
         print(f"\n🏋️ Training for {args.epochs} epochs...")
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,

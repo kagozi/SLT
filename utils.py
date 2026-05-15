@@ -268,7 +268,7 @@ class Trainer:
                  contrastive_weight=0.0, rdrop_weight=0.0, ctc_smoothing=0.1,
                  total_epochs=100, base_lr=1e-3, bart_lr=5e-5,
                  warmup_bart_epochs=None, joint_encoder_lr_scale=0.2,
-                 joint_bart_lr_scale=0.5):
+                 joint_bart_lr_scale=0.5, early_stop_patience=0):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -294,6 +294,8 @@ class Trainer:
         )
         self.joint_encoder_lr_scale = joint_encoder_lr_scale
         self.joint_bart_lr_scale    = joint_bart_lr_scale
+        self.early_stop_patience    = max(0, int(early_stop_patience))
+        self.epochs_without_improve = 0
         self.best_score = None
         self.best_summary = None
 
@@ -616,7 +618,7 @@ class Trainer:
 
     def _adjust_learning_rate(self, step):
         if step < self.warmup_steps:
-            factor = 2 ** -(self.warmup_steps - step)
+            factor = (step + 1) / max(1, self.warmup_steps)
         else:
             progress = (step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             factor = 0.5 * (1 + math.cos(math.pi * progress))
@@ -694,16 +696,18 @@ class Trainer:
     def _select_score(self, val_loss, gloss_metrics, trans_metrics):
         """Return a lexicographic checkpoint score tuple; larger is better."""
         gloss_bleu4 = gloss_metrics.get('BLEU-4', 0.0)
+        gloss_bleu1 = gloss_metrics.get('BLEU-1', 0.0)
         trans_bleu4 = trans_metrics.get('BLEU-4', 0.0)
         trans_bleu1 = trans_metrics.get('BLEU-1', 0.0)
         gloss_wer = gloss_metrics.get('WER', 1.0)
+        empty_ratio = gloss_metrics.get('empty_pred_ratio', 1.0)
         safe_loss = val_loss if np.isfinite(val_loss) else 1e9
 
         if self.use_bart and self.ctc_weight == 0:
             return (trans_bleu4, trans_bleu1, -safe_loss)
         if self.use_bart:
             return (trans_bleu4, -gloss_wer, gloss_bleu4, -safe_loss)
-        return (-gloss_wer, gloss_bleu4, -safe_loss)
+        return (gloss_bleu4, gloss_bleu1, -empty_ratio, -gloss_wer, -safe_loss)
 
     @torch.no_grad()
     def validate(self, decode_mode='greedy', beam_width=5):
@@ -838,6 +842,7 @@ class Trainer:
             )
             gloss_metrics = {
                 'WER': val_wer,
+                'empty_pred_ratio': empty_pred_ratio,
                 **val_bleu,
             }
             score = self._select_score(val_loss, gloss_metrics, trans_bleu)
@@ -917,6 +922,7 @@ class Trainer:
 
             if self.best_score is None or score > self.best_score:
                 self.best_score = score
+                self.epochs_without_improve = 0
                 self.best_val_loss = val_loss
                 self.best_summary = {
                     'val_loss': val_loss,
@@ -947,6 +953,17 @@ class Trainer:
                         'val/best_bleu4': val_bleu.get('BLEU-4', 0),
                         'val/best_trans_bleu4': trans_bleu.get('BLEU-4', 0),
                     }, step=epoch)
+            else:
+                self.epochs_without_improve += 1
+                if (
+                    self.early_stop_patience > 0
+                    and self.epochs_without_improve >= self.early_stop_patience
+                ):
+                    print(
+                        f'  ⏹ Early stopping: no validation score improvement '
+                        f'for {self.epochs_without_improve} epochs.'
+                    )
+                    break
 
 
         # ── Plot training curves at end of training ──
