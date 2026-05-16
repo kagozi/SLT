@@ -22,3 +22,7 @@ results_local_*
 draw_detail_architecture.py
 draw_architecture.py
 results/*
+node_modules
+manuscript_architecture_diagram.py
+architecture_*
+*.docx

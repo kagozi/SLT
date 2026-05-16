@@ -505,6 +505,8 @@ def main():
                         help='CTC target for datasets without true glosses. '
                              'pseudogloss uses PSEUDOGLOSS, translation uses normalized '
                              'English text, translation_keywords uses content-word English.')
+    parser.add_argument('--unglossed_min_freq', type=int, default=2,
+                        help='Minimum token frequency for unglossed CTC vocabularies.')
     
     # Training
     parser.add_argument('--epochs', type=int, default=100)
@@ -681,7 +683,7 @@ def main():
             elif 'PSEUDOGLOSS' in df_yt.columns:
                 ctc_texts = df_yt['PSEUDOGLOSS'].dropna().tolist()
         if ctc_texts:
-            tokenizer = GlossTokenizer(ctc_texts, min_freq=2)
+            tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
             print(f"  YouTubeASL {args.unglossed_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
         else:
             print("  YouTubeASL: no CTC targets — using dummy tokenizer (glossless mode)")
@@ -704,7 +706,7 @@ def main():
             elif 'PSEUDOGLOSS' in df_h2s.columns:
                 ctc_texts = df_h2s['PSEUDOGLOSS'].dropna().tolist()
         if ctc_texts:
-            tokenizer = GlossTokenizer(ctc_texts, min_freq=2)
+            tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
             print(f"  How2Sign {args.unglossed_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
         else:
             print("  How2Sign: no CTC targets — using dummy tokenizer (glossless mode)")

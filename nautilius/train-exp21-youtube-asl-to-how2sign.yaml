@@ -1,8 +1,7 @@
-# Experiment 21: YouTube-ASL → How2Sign Fine-tune (full fine-tune, multistream)
+# Experiment 21: YouTube-ASL → How2Sign Fine-tune (keyword CTC + BART)
 #
-# Fine-tunes the Exp 20 YouTube-ASL checkpoint on How2Sign with the full
-# multistream + CTC + mBART pipeline.  All encoder layers are trainable
-# (freeze_strategy=none) at a reduced LR to avoid catastrophic forgetting.
+# Fine-tunes the Exp20 YouTube-ASL checkpoint on How2Sign with the full
+# multistream + keyword CTC + mBART pipeline. All layers are trainable.
 #
 # Target comparison (How2Sign BLEU-4):
 #   Exp 18 (scratch)              — baseline
@@ -37,11 +36,11 @@ spec:
           - "--exp_name"
           - "exp21_youtube_asl_to_how2sign"
           - "--epochs"
-          - "200"
+          - "120"
           - "--decode"
           - "beam"
           - "--beam_width"
-          - "10"
+          - "4"
           - "--batch_size"
           - "16"
           - "--grad_accum"
@@ -71,10 +70,14 @@ spec:
           - "0.05"
           - "--ctc_smoothing"
           - "0.0"
+          - "--early_stop_patience"
+          - "12"
           - "--pretrained_path"
           - "/data/experiments/models/exp20_youtube_asl_pretrain/best_exp20_youtube_asl_pretrain.pt"
           - "--freeze_strategy"
           - "none"
+          - "--unglossed_min_freq"
+          - "5"
           - "--unglossed_ctc_target"
           - "translation_keywords"
         env:
@@ -93,12 +96,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "1"
-            memory: "6Gi"
+            cpu: "2"
+            memory: "9Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "1"
-            memory: "7Gi"
+            cpu: "2"
+            memory: "10Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

@@ -1,9 +1,8 @@
-# Experiment 20: YouTube-ASL Pretraining (multistream, CTC + BART)
+# Experiment 20: YouTube-ASL Pretraining (multistream, keyword CTC + BART)
 #
 # Pretrains the MultiStreamSignLanguageTransformer on YouTube-ASL
-# (~610K ASL-to-English sentences, 984 hours).  Uses joint CTC
-# (pseudo-gloss) + mBART translation objective — same setup as Exp 18
-# on How2Sign but on a 60x larger in-domain (ASL) corpus.
+# (~610K ASL-to-English sentences, 984 hours). Uses the same corrected
+# English keyword CTC target as How2Sign plus mBART translation.
 #
 # The saved checkpoint is the pretraining source for Exp 21
 # (YouTube-ASL → How2Sign fine-tune), enabling a direct comparison
@@ -40,11 +39,11 @@ spec:
           - "--exp_name"
           - "exp20_youtube_asl_pretrain"
           - "--epochs"
-          - "50"
+          - "80"
           - "--decode"
           - "beam"
           - "--beam_width"
-          - "10"
+          - "4"
           - "--batch_size"
           - "16"
           - "--grad_accum"
@@ -65,7 +64,7 @@ spec:
           - "--ffn_expand"
           - "4"
           - "--lr"
-          - "1.5e-4"
+          - "5e-5"
           - "--dropout"
           - "0.3"
           - "--label_smoothing"
@@ -74,6 +73,10 @@ spec:
           - "0.05"
           - "--ctc_smoothing"
           - "0.0"
+          - "--early_stop_patience"
+          - "10"
+          - "--unglossed_min_freq"
+          - "5"
           - "--unglossed_ctc_target"
           - "translation_keywords"
         env:
@@ -92,12 +95,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "1"
-            memory: "6Gi"
+            cpu: "2"
+            memory: "9Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "1"
-            memory: "6Gi"
+            cpu: "2"
+            memory: "10Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

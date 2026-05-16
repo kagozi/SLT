@@ -144,6 +144,7 @@ class YouTubeASLDataset(Dataset):
         gloss_indices = torch.tensor([1], dtype=torch.long)
         if self.tokenizer and gloss_text:
             gloss_indices = self.tokenizer.encode(gloss_text)
+            gloss_text = self.tokenizer.decode(gloss_indices)
 
         translation_text = sample['sentence']
         translation_ids  = None

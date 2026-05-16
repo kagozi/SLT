@@ -1,8 +1,6 @@
-# Transfer Track A4
-# Experiment 10: How2Sign — Scratch Baseline (multistream control)
-# Same architecture family as Exps 7-9 but NO pretrained weights.
-# Control experiment: measures how much the multistream transfer runs benefit
-# from PHOENIX pretraining.
+# Experiment 10: How2Sign — Scratch keyword-CTC baseline
+# No pretrained weights. Uses the corrected English keyword CTC target for
+# How2Sign, with a reduced weak-target vocabulary to avoid blank collapse.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -11,7 +9,7 @@ metadata:
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 259200
+  activeDeadlineSeconds: 432000
   template:
     spec:
       restartPolicy: Never
@@ -29,7 +27,7 @@ spec:
           - "--exp_name"
           - "exp10_transfer_scratch"
           - "--epochs"
-          - "60"
+          - "100"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -53,7 +51,9 @@ spec:
           - "--ctc_smoothing"
           - "0.0"
           - "--early_stop_patience"
-          - "10"
+          - "12"
+          - "--unglossed_min_freq"
+          - "5"
           - "--unglossed_ctc_target"
           - "translation_keywords"
         env:
@@ -72,12 +72,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "1"
-            memory: "6Gi"
+            cpu: "2"
+            memory: "9Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "1"
-            memory: "8Gi"
+            cpu: "2"
+            memory: "10Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

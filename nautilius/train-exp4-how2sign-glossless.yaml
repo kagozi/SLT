@@ -1,6 +1,7 @@
-# Experiment 4: How2Sign — Glossless Sign2Text (BART only)
-# ASL dataset, no gloss labels. Does not require pseudogloss generation.
-# Run AFTER preextract-how2sign-keypoints job completes.
+# Experiment 4: How2Sign — Glossless Sign2Text baseline (BART only)
+# ASL dataset, no gloss/keyword CTC supervision. This is the clean ablation
+# against Exp21's keyword-CTC + BART setup.
+# Run AFTER How2Sign holistic features are available on the PVC.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -27,24 +28,27 @@ spec:
           - "--exp_name"
           - "exp4_how2sign_glossless"
           - "--epochs"
-          - "500"
+          - "120"
           - "--decode"
           - "beam"
           - "--beam_width"
-          - "10"
+          - "4"
           - "--batch_size"
-          - "4"
+          - "16"
           - "--grad_accum"
-          - "4"
+          - "2"
           - "--fp16"
           - "--dim"
           - "256"
           - "--lr"
-          - "2e-4"
+          - "5e-5"
           - "--max_frames"
           - "300"
           - "--num_workers"
-          - "4"
+          - "2"
+          - "--multistream"
+          - "--dropout"
+          - "0.3"
           - "--use_bart"
           - "--ctc_weight"
           - "0.0"
@@ -54,6 +58,16 @@ spec:
           - "4"
           - "--label_smoothing"
           - "0.1"
+          - "--contrastive_weight"
+          - "0.05"
+          - "--ctc_smoothing"
+          - "0.0"
+          - "--early_stop_patience"
+          - "12"
+          - "--unglossed_min_freq"
+          - "5"
+          - "--unglossed_ctc_target"
+          - "translation_keywords"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -70,12 +84,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "4"
-            memory: "32Gi"
+            cpu: "2"
+            memory: "9Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "4"
-            memory: "32Gi"
+            cpu: "2"
+            memory: "10Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data
