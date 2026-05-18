@@ -62,6 +62,7 @@ from translation_utils import (
     resolve_translation_config,
     configure_tokenizer_for_target,
     normalize_translation_text,
+    normalize_german_text,
     translation_keywords,
 )
 
@@ -507,6 +508,11 @@ def main():
                              'English text, translation_keywords uses content-word English.')
     parser.add_argument('--unglossed_min_freq', type=int, default=2,
                         help='Minimum token frequency for unglossed CTC vocabularies.')
+    parser.add_argument('--phoenix_ctc_target', type=str, default='gloss',
+                        choices=['gloss', 'translation'],
+                        help='CTC target for PHOENIX dataset: gloss uses ground-truth gloss '
+                             'annotations, translation uses normalized German text tokens '
+                             '(Maia et al. 2025 glossless CTC paradigm).')
     
     # Training
     parser.add_argument('--epochs', type=int, default=100)
@@ -660,13 +666,17 @@ def main():
             print(f"  forced_bos_token_id={args.forced_bos_token_id}")
     
     if args.dataset == 'phoenix':
-        # Build gloss tokenizer from PHOENIX annotations
+        # Build CTC tokenizer from PHOENIX annotations
         all_gloss = []
         for split in ['train', 'dev', 'test']:
             csv = Path(args.root_dir) / 'annotations' / 'manual' / f'PHOENIX-2014-T.{split}.corpus.csv'
             df = pd.read_csv(csv, sep='|')
-            all_gloss.extend(df['orth'].dropna().tolist())
+            if args.phoenix_ctc_target == 'translation':
+                all_gloss.extend(df['translation'].dropna().map(normalize_german_text).tolist())
+            else:
+                all_gloss.extend(df['orth'].dropna().tolist())
         tokenizer = GlossTokenizer(all_gloss, min_freq=1)
+        print(f"  PHOENIX {args.phoenix_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
     elif args.dataset == 'youtube_asl':
         # YouTube-ASL has no true glosses. Build CTC vocab from the selected
         # weak target, defaulting to legacy PSEUDOGLOSS for compatibility.
@@ -717,11 +727,14 @@ def main():
     
     if args.dataset == 'phoenix':
         train_ds = PhoenixSignDataset(args.root_dir, 'train', args.max_frames, True,
-                                       tokenizer, bart_tokenizer)
+                                       tokenizer, bart_tokenizer,
+                                       ctc_target=args.phoenix_ctc_target)
         val_ds = PhoenixSignDataset(args.root_dir, 'dev', args.max_frames, False,
-                                     tokenizer, bart_tokenizer)
+                                     tokenizer, bart_tokenizer,
+                                     ctc_target=args.phoenix_ctc_target)
         test_ds = PhoenixSignDataset(args.root_dir, 'test', args.max_frames, False,
-                                      tokenizer, bart_tokenizer)
+                                      tokenizer, bart_tokenizer,
+                                      ctc_target=args.phoenix_ctc_target)
     elif args.dataset == 'youtube_asl':
         train_ds = YouTubeASLDataset(args.root_dir, 'train', args.max_frames, True,
                                       tokenizer, bart_tokenizer,

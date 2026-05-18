@@ -1,0 +1,100 @@
+# Experiment 24: PHOENIX-2014-T — Multistream + Motion + CTC on German Text
+#
+# Tests the hypothesis: does multistream + motion improve performance over
+# a flat encoder within the Maia et al. (2025) CTC-on-text paradigm?
+#
+# Architecture differences vs Exp 23 (flat CTC-on-German-text):
+#   - Multistream encoder: separate pose/lhand/rhand/face streams
+#   - Per-stream velocity + acceleration features (motion already built in)
+#   - Cross-stream attention fusion
+#
+# Everything else is identical to Exp 23 so the comparison is clean:
+#   - Same CTC target: normalized German text word tokens
+#   - No ground-truth glosses used
+#   - No pretrained seq2seq decoder
+#   - Same hyperparameters: lr, dropout, epochs, batch size
+#
+# Checkpoint saved to: /data/experiments/models/exp24_phoenix_multistream_ctc_german/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp24-phoenix-multistream-ctc-german
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp24_phoenix_multistream_ctc_german"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "8"
+          - "--grad_accum"
+          - "2"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "1e-3"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--multistream"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "50"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

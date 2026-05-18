@@ -1,0 +1,113 @@
+# Experiment 22: PHOENIX-2014-T — Multistream Sign2Gloss2Text (joint CTC + mBART)
+#
+# Mirrors Exp 2 (flat Sign2Gloss2Text) but uses the multistream encoder,
+# warm-started from the fully converged Exp 19 multistream CTC checkpoint
+# (WER 0.376, Gloss BLEU-4 17.48).
+#
+# Motivation: Exp 19's stronger recognition encoder should produce better
+# encoder states for the mBART decoder, expected to push Trans. BLEU-4
+# above the 9.54 achieved by the flat encoder in Exp 2.
+#
+# Training curriculum (3 stages):
+#   Stage 1: freeze_bart_epochs=20  — CTC-only, encoder adapts
+#   Stage 2: warmup_bart_epochs=20  — mBART unfreezes, encoder detached
+#   Stage 3: full joint fine-tuning — all parameters trainable
+#
+# Depends on: /data/experiments/models/exp19_phoenix_multistream_sign2gloss/best_model.pt
+# Checkpoint saved to: /data/experiments/models/exp22_phoenix_multistream_sign2gloss2text/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp22-phoenix-multistream-s2g2t
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp22_phoenix_multistream_sign2gloss2text"
+          - "--epochs"
+          - "300"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "1"
+          - "--grad_accum"
+          - "16"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "1e-4"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "2"
+          - "--multistream"
+          - "--use_bart"
+          - "--ctc_weight"
+          - "0.5"
+          - "--freeze_bart_epochs"
+          - "20"
+          - "--warmup_bart_epochs"
+          - "20"
+          - "--joint_encoder_lr_scale"
+          - "0.2"
+          - "--joint_bart_lr_scale"
+          - "0.5"
+          - "--ffn_expand"
+          - "4"
+          - "--label_smoothing"
+          - "0.1"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp19_phoenix_multistream_sign2gloss/best_model.pt"
+          - "--freeze_strategy"
+          - "none"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "4"
+            memory: "32Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "32Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

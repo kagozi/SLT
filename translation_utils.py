@@ -29,6 +29,14 @@ def normalize_translation_text(text: str) -> str:
     return text.upper()
 
 
+def normalize_german_text(text: str) -> str:
+    """Normalize German text for word-level CTC targets, preserving umlauts."""
+    text = str(text or "").lower()
+    text = re.sub(r"[^a-zäöüß0-9'\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.upper()
+
+
 def translation_keywords(text: str, min_tokens: int = 1) -> str:
     """Lightweight content-word target for unglossed CTC training."""
     normalized = normalize_translation_text(text)

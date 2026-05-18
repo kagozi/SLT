@@ -1,0 +1,99 @@
+# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+#
+# Replicates the Maia et al. (2025) glossless CTC paradigm:
+#   - No ground-truth gloss annotations used
+#   - CTC loss directly on normalized German text word tokens
+#   - Flat single-stream transformer encoder (no multistream, no motion)
+#   - No pretrained seq2seq decoder (pure CTC)
+#
+# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
+# isolates the effect of multistream + motion features within the exact
+# same CTC-on-text training paradigm as Maia et al.
+#
+# Key difference from our Exp 1 (Sign2Gloss):
+#   Exp 1 uses German gloss tokens as CTC target
+#   Exp 23 uses normalized German translation words as CTC target
+#
+# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp23-phoenix-flat-ctc-german
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp23_phoenix_flat_ctc_german"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "8"
+          - "--grad_accum"
+          - "2"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "1e-3"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "50"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "4"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "4"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

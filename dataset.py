@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from preprocessing import PhoenixKeypointExtractor
 from keypoint_utils import normalize_flat_keypoints
-from translation_utils import encode_translation_target
+from translation_utils import encode_translation_target, normalize_german_text
 
 
 class PhoenixSignDataset(Dataset):
@@ -15,13 +15,14 @@ class PhoenixSignDataset(Dataset):
     COORDS_PER_JOINT = 3
     
     def __init__(self, root_dir, split='train', max_frames=250, augment=True,
-                 tokenizer=None, bart_tokenizer=None):
+                 tokenizer=None, bart_tokenizer=None, ctc_target='gloss'):
         self.root_dir = Path(root_dir)
         self.split = split
         self.max_frames = max_frames
         self.augment = augment and (split == 'train')
         self.tokenizer = tokenizer
         self.bart_tokenizer = bart_tokenizer  # For BART translation targets
+        self.ctc_target = ctc_target  # 'gloss' or 'translation'
         
         csv_path = self.root_dir / 'annotations' / 'manual' / f'PHOENIX-2014-T.{split}.corpus.csv'
         self.df = pd.read_csv(csv_path, sep='|')
@@ -71,8 +72,12 @@ class PhoenixSignDataset(Dataset):
             pad = torch.zeros(self.max_frames - T, keypoints.shape[1])
             keypoints = torch.cat([keypoints, pad], dim=0)
         
-        # Gloss tokens
-        gloss_text = row['orth'] if isinstance(row['orth'], str) else ""
+        # Gloss / CTC tokens
+        if self.ctc_target == 'translation':
+            raw_trans = row['translation'] if isinstance(row['translation'], str) else ""
+            gloss_text = normalize_german_text(raw_trans)
+        else:
+            gloss_text = row['orth'] if isinstance(row['orth'], str) else ""
         gloss_indices = self.tokenizer.encode(gloss_text) if self.tokenizer else torch.tensor([1], dtype=torch.long)
         
         # Translation text
