@@ -1,24 +1,27 @@
-# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+# Experiment 34: How2Sign — Maia-Style Flat CTC English (True Replication)
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
-#   - No ground-truth gloss annotations used
-#   - CTC loss directly on normalized German text word tokens
-#   - Flat single-stream transformer encoder (no multistream, no motion)
-#   - No pretrained seq2seq decoder (pure CTC)
+# True replication of Maia et al. (ASL2Text.ipynb) in our PyTorch framework,
+# including the interleaved Conv+Transformer block architecture.
 #
-# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
-# isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# Maia's notebook key specs (TensorFlow, ASL subset):
+#   dim=384, FFN expand=2, lr=4e-4, wd=1e-4, FRAME_LEN=180
+#   6 interleaved [Conv(k=11/5) + Transformer] blocks
+#   CTC on English text
 #
-# Key difference from our Exp 1 (Sign2Gloss):
-#   Exp 1 uses German gloss tokens as CTC target
-#   Exp 23 uses normalized German translation words as CTC target
+# How this maps to our flags:
+#   --arch interleaved  → 6 ConformerBlocks (Conv+Transformer pairs, kernels 11,5 alternating)
+#   --dim 384           → matches Maia
+#   --ffn_expand 2      → matches Maia
+#   --lr 4e-4           → matches Maia
+#   --max_frames 180    → matches Maia FRAME_LEN
+#   --dropout 0.1       → Maia uses minimal regularisation
 #
-# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+# Serves as the proven baseline for Exp 35 (multistream + motion improvement).
+# Checkpoint saved to: /data/experiments/models/exp34_how2sign_maia_flat_ctc_english/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp23-phoenix-flat-ctc-german
+  name: train-exp34-how2sign-maia-flat-ctc-english
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -33,13 +36,13 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp23_phoenix_flat_ctc_german"
+          - "exp34_how2sign_maia_flat_ctc_english"
           - "--epochs"
           - "500"
           - "--decode"
@@ -52,17 +55,21 @@ spec:
           - "2"
           - "--fp16"
           - "--dim"
-          - "256"
+          - "384"
           - "--lr"
-          - "1e-3"
+          - "4e-4"
           - "--dropout"
-          - "0.3"
+          - "0.1"
           - "--num_workers"
           - "4"
-          - "--phoenix_ctc_target"
+          - "--arch"
+          - "interleaved"
+          - "--unglossed_ctc_target"
           - "translation"
           - "--ffn_expand"
-          - "4"
+          - "2"
+          - "--max_frames"
+          - "180"
           - "--ctc_smoothing"
           - "0.1"
           - "--early_stop_patience"

@@ -1,29 +1,27 @@
-# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+# Experiment 28: YouTube-ASL — Flat Encoder + CTC on English Text
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
-#   - No ground-truth gloss annotations used
-#   - CTC loss directly on normalized German text word tokens
-#   - Flat single-stream transformer encoder (no multistream, no motion)
-#   - No pretrained seq2seq decoder (pure CTC)
+# Replicates the Exp 23/26 CTC-on-text paradigm on YouTube-ASL (~610K samples).
+# Flat single-stream encoder, CTC on normalized English translation text.
+# No BART decoder — pure CTC, matching the Maia et al. glossless paradigm.
 #
-# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
-# isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# Serves as:
+#   (a) YouTube-ASL standalone flat CTC baseline
+#   (b) Pretraining source for Exp 30 (YouTube-ASL → How2Sign flat CTC transfer)
 #
-# Key difference from our Exp 1 (Sign2Gloss):
-#   Exp 1 uses German gloss tokens as CTC target
-#   Exp 23 uses normalized German translation words as CTC target
+# unglossed_min_freq=5 keeps vocabulary tractable given the large corpus.
+# 80 epochs with patience=15: each epoch covers ~19K gradient steps (610K/32),
+# so 80 epochs ≈ 1.5M steps — sufficient for convergence without BART overhead.
 #
-# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+# Checkpoint saved to: /data/experiments/models/exp28_youtube_asl_flat_ctc_english/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp23-phoenix-flat-ctc-german
+  name: train-exp28-youtube-asl-flat-ctc-english
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 864000
+  activeDeadlineSeconds: 1036800
   template:
     spec:
       restartPolicy: Never
@@ -33,40 +31,44 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "youtube_asl"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/youtube_asl"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp23_phoenix_flat_ctc_german"
+          - "exp28_youtube_asl_flat_ctc_english"
           - "--epochs"
-          - "500"
+          - "80"
           - "--decode"
           - "beam"
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "8"
+          - "16"
           - "--grad_accum"
           - "2"
           - "--fp16"
           - "--dim"
           - "256"
+          - "--max_frames"
+          - "300"
           - "--lr"
           - "1e-3"
           - "--dropout"
           - "0.3"
           - "--num_workers"
-          - "4"
-          - "--phoenix_ctc_target"
+          - "2"
+          - "--unglossed_ctc_target"
           - "translation"
+          - "--unglossed_min_freq"
+          - "5"
           - "--ffn_expand"
           - "4"
           - "--ctc_smoothing"
           - "0.1"
           - "--early_stop_patience"
-          - "50"
+          - "15"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -84,11 +86,11 @@ spec:
         resources:
           requests:
             cpu: "2"
-            memory: "8Gi"
+            memory: "9Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "2"
-            memory: "8Gi"
+            memory: "10Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

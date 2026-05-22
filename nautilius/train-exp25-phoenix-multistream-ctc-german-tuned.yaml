@@ -1,24 +1,29 @@
-# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+# Experiment 25: PHOENIX-2014-T — Multistream + CTC on German Text (tuned)
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
-#   - No ground-truth gloss annotations used
-#   - CTC loss directly on normalized German text word tokens
-#   - Flat single-stream transformer encoder (no multistream, no motion)
-#   - No pretrained seq2seq decoder (pure CTC)
+# Tuned version of Exp 24 to fix training collapse.
 #
-# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
-# isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# Exp 24 diagnosis: beam=1 gave BLEU-4=47 but WER=0.96 — a degenerate collapse
+# where the model output common German tokens with high 4-gram overlap but no
+# true sequence learning. Root causes:
+#   1. lr=1e-3 is too aggressive for the 4× larger multistream model
+#   2. early_stop_patience=50 cut training before recovery from early minima
+#   3. dropout=0.3 over-regularized a model already regularized by stream separation
+#   4. ctc_smoothing=0.1 prevented the model from building confidence
 #
-# Key difference from our Exp 1 (Sign2Gloss):
-#   Exp 1 uses German gloss tokens as CTC target
-#   Exp 23 uses normalized German translation words as CTC target
+# Changes vs Exp 24:
+#   - lr: 1e-3 → 3e-4      (primary fix; ~4× more conv params needs smaller steps)
+#   - early_stop_patience: 50 → 100  (multistream needs longer to converge)
+#   - dropout: 0.3 → 0.2   (streams provide structural regularization)
+#   - ctc_smoothing: 0.1 → 0.05  (let model build prediction confidence)
 #
-# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+# Everything else is identical to Exp 24.
+# Target: BLEU-4 > 13.96 (Exp 23 test score).
+#
+# Checkpoint saved to: /data/experiments/models/exp25_phoenix_multistream_ctc_german_tuned/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp23-phoenix-flat-ctc-german
+  name: train-exp25-phoenix-multistream-ctc-german-tuned
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -39,7 +44,7 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp23_phoenix_flat_ctc_german"
+          - "exp25_phoenix_multistream_ctc_german_tuned"
           - "--epochs"
           - "500"
           - "--decode"
@@ -54,19 +59,20 @@ spec:
           - "--dim"
           - "256"
           - "--lr"
-          - "1e-3"
+          - "3e-4"
           - "--dropout"
-          - "0.3"
+          - "0.2"
           - "--num_workers"
           - "4"
+          - "--multistream"
           - "--phoenix_ctc_target"
           - "translation"
           - "--ffn_expand"
           - "4"
           - "--ctc_smoothing"
-          - "0.1"
+          - "0.05"
           - "--early_stop_patience"
-          - "50"
+          - "100"
         env:
         - name: WANDB_API_KEY
           valueFrom:

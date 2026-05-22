@@ -1,24 +1,31 @@
-# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+# Experiment 35: How2Sign — Maia-Style Multistream CTC English (Fine-tuned)
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
-#   - No ground-truth gloss annotations used
-#   - CTC loss directly on normalized German text word tokens
-#   - Flat single-stream transformer encoder (no multistream, no motion)
-#   - No pretrained seq2seq decoder (pure CTC)
+# Improvement over Maia (Exp 34) using multistream + motion.
 #
-# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
-# isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# Architecture:
+#   --arch interleaved --multistream:
+#     Each of the 4 body-part streams (pose/lhand/rhand/face) runs through
+#     3 ConformerBlocks (Conv+Transformer pairs, kernels 11/5/11) with per-stream
+#     velocity + acceleration features (motion). Streams are then fused via
+#     cross-stream attention, followed by 4 shared TransformerBlocks.
 #
-# Key difference from our Exp 1 (Sign2Gloss):
-#   Exp 1 uses German gloss tokens as CTC target
-#   Exp 23 uses normalized German translation words as CTC target
+# This directly tests whether multistream + motion improves over Maia's flat encoder,
+# while keeping the same Conformer-style interleaved block structure.
 #
-# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+# Transfer from Exp 34: only transformer_blocks weights carry over (shared across
+# flat→multistream); per-stream projections and ConformerBlocks train from scratch.
+#
+# Tuned vs Exp 34:
+#   - lr: 2e-4  (lower — multistream is larger; also fine-tune regime)
+#   - dropout: 0.2  (streams provide structural regularisation)
+#   - ctc_smoothing: 0.05
+#   - early_stop_patience: 100
+#
+# Checkpoint saved to: /data/experiments/models/exp35_how2sign_maia_multistream_ctc_english/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp23-phoenix-flat-ctc-german
+  name: train-exp35-how2sign-maia-multistream-ctc-english
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -33,13 +40,13 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp23_phoenix_flat_ctc_german"
+          - "exp35_how2sign_maia_multistream_ctc_english"
           - "--epochs"
           - "500"
           - "--decode"
@@ -52,21 +59,26 @@ spec:
           - "2"
           - "--fp16"
           - "--dim"
-          - "256"
+          - "384"
           - "--lr"
-          - "1e-3"
+          - "2e-4"
           - "--dropout"
-          - "0.3"
+          - "0.2"
           - "--num_workers"
           - "4"
-          - "--phoenix_ctc_target"
+          - "--arch"
+          - "interleaved"
+          - "--multistream"
+          - "--unglossed_ctc_target"
           - "translation"
           - "--ffn_expand"
-          - "4"
+          - "2"
+          - "--max_frames"
+          - "180"
           - "--ctc_smoothing"
-          - "0.1"
+          - "0.05"
           - "--early_stop_patience"
-          - "50"
+          - "100"
         env:
         - name: WANDB_API_KEY
           valueFrom:

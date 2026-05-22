@@ -53,12 +53,12 @@ spec:
               key: api-key
         resources:
           requests:
-            cpu: "4"
-            memory: "24Gi"
+            cpu: "2"
+            memory: "12Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "4"
-            memory: "24Gi"
+            cpu: "2"
+            memory: "12Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

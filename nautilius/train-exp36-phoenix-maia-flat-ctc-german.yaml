@@ -1,24 +1,24 @@
-# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+# Experiment 36: PHOENIX-2014-T — Maia-Style Flat CTC German (True Replication)
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
-#   - No ground-truth gloss annotations used
-#   - CTC loss directly on normalized German text word tokens
-#   - Flat single-stream transformer encoder (no multistream, no motion)
-#   - No pretrained seq2seq decoder (pure CTC)
+# True replication of Maia et al. (Sign2German) architecture on PHOENIX-2014-T,
+# using the same hyperparameter spec as Exp 34 (How2Sign Maia replication).
 #
-# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
-# isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# Maia-matched specs:
+#   --arch interleaved  → 6 ConformerBlocks (Conv+Transformer pairs, kernels 11,5 alternating)
+#   --dim 384           → matches Maia
+#   --ffn_expand 2      → matches Maia
+#   --lr 4e-4           → matches Maia
+#   --dropout 0.1       → Maia uses minimal regularisation
 #
-# Key difference from our Exp 1 (Sign2Gloss):
-#   Exp 1 uses German gloss tokens as CTC target
-#   Exp 23 uses normalized German translation words as CTC target
+# Note: Exp 23 is NOT a Maia replication — it uses dim=256, ffn_expand=4, lr=1e-3.
+# This experiment establishes the true Maia baseline for PHOENIX.
 #
-# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+# Serves as the flat baseline for Exp 37 (multistream + motion improvement).
+# Checkpoint saved to: /data/experiments/models/exp36_phoenix_maia_flat_ctc_german/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp23-phoenix-flat-ctc-german
+  name: train-exp36-phoenix-maia-flat-ctc-german
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -39,7 +39,7 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp23_phoenix_flat_ctc_german"
+          - "exp36_phoenix_maia_flat_ctc_german"
           - "--epochs"
           - "500"
           - "--decode"
@@ -52,17 +52,19 @@ spec:
           - "2"
           - "--fp16"
           - "--dim"
-          - "256"
+          - "384"
           - "--lr"
-          - "1e-3"
+          - "4e-4"
           - "--dropout"
-          - "0.3"
+          - "0.1"
           - "--num_workers"
           - "4"
+          - "--arch"
+          - "interleaved"
           - "--phoenix_ctc_target"
           - "translation"
           - "--ffn_expand"
-          - "4"
+          - "2"
           - "--ctc_smoothing"
           - "0.1"
           - "--early_stop_patience"

@@ -84,12 +84,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "4"
-            memory: "40Gi"
+            cpu: "2"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "4"
-            memory: "40Gi"
+            cpu: "2"
+            memory: "16Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

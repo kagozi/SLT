@@ -1,24 +1,25 @@
-# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+# Experiment 27: How2Sign — Multistream + CTC on English Text (tuned)
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
-#   - No ground-truth gloss annotations used
-#   - CTC loss directly on normalized German text word tokens
-#   - Flat single-stream transformer encoder (no multistream, no motion)
-#   - No pretrained seq2seq decoder (pure CTC)
+# Direct replication of Exp 25 (tuned PHOENIX multistream CTC-on-German) on How2Sign.
+# Same tuned hyperparameters that fixed Exp 24's training collapse on PHOENIX:
+#   - lr: 3e-4 (not 1e-3 — smaller steps for 4× larger multistream model)
+#   - early_stop_patience: 100 (not 50 — multistream needs longer to converge)
+#   - dropout: 0.2 (not 0.3 — streams provide structural regularization)
+#   - ctc_smoothing: 0.05 (not 0.1 — let model build prediction confidence)
 #
-# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
-# isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# Key differences vs Exp 25 (PHOENIX):
+#   - dataset: how2sign (ASL) instead of phoenix (DGS)
+#   - CTC target: normalized English text (--unglossed_ctc_target translation)
+#   - max_frames: 300 (How2Sign default, vs 250 for PHOENIX)
 #
-# Key difference from our Exp 1 (Sign2Gloss):
-#   Exp 1 uses German gloss tokens as CTC target
-#   Exp 23 uses normalized German translation words as CTC target
+# Comparing Exp 26 vs Exp 27 isolates the effect of multistream + motion
+# within the CTC-on-text paradigm on How2Sign.
 #
-# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+# Checkpoint saved to: /data/experiments/models/exp27_how2sign_multistream_ctc_english_tuned/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp23-phoenix-flat-ctc-german
+  name: train-exp27-how2sign-multistream-ctc-english-tuned
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -33,13 +34,13 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp23_phoenix_flat_ctc_german"
+          - "exp27_how2sign_multistream_ctc_english_tuned"
           - "--epochs"
           - "500"
           - "--decode"
@@ -54,19 +55,20 @@ spec:
           - "--dim"
           - "256"
           - "--lr"
-          - "1e-3"
+          - "3e-4"
           - "--dropout"
-          - "0.3"
+          - "0.2"
           - "--num_workers"
           - "4"
-          - "--phoenix_ctc_target"
+          - "--multistream"
+          - "--unglossed_ctc_target"
           - "translation"
           - "--ffn_expand"
           - "4"
           - "--ctc_smoothing"
-          - "0.1"
+          - "0.05"
           - "--early_stop_patience"
-          - "50"
+          - "100"
         env:
         - name: WANDB_API_KEY
           valueFrom:

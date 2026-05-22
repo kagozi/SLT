@@ -1,24 +1,38 @@
-# Experiment 22: PHOENIX-2014-T — Multistream Sign2Gloss2Text (joint CTC + mBART)
+# Experiment 32: PHOENIX-2014-T — Multistream Sign2Gloss2Text (Maia et al. replication)
 #
-# Mirrors Exp 2 (flat Sign2Gloss2Text) but uses the multistream encoder,
-# warm-started from the fully converged Exp 19 multistream CTC checkpoint
-# (WER 0.376, Gloss BLEU-4 17.48).
+# Replicates the traditional Sign2Gloss2Text pipeline from Maia et al. (Sign2German)
+# using the multistream encoder:
+#   Sign → multistream CTC on ground-truth GLOSS tokens → mBART → German text
 #
-# Motivation: Exp 19's stronger recognition encoder should produce better
-# encoder states for the mBART decoder, expected to push Trans. BLEU-4
-# above the 9.54 achieved by the flat encoder in Exp 2.
+# This is the complement to Exp 23/25 (glossless CTC-on-text):
+#   Exp 23/25: no gloss annotations, CTC target = German text words directly
+#   Exp 32:    gloss annotations used, multistream CTC gloss + mBART translation
 #
-# Training curriculum (3 stages):
-#   Stage 1: freeze_bart_epochs=20  — CTC-only, encoder adapts
-#   Stage 2: warmup_bart_epochs=20  — mBART unfreezes, encoder detached
-#   Stage 3: full joint fine-tuning — all parameters trainable
+# Multistream replaces the flat encoder to match our best recognition backbone
+# (Exp 19/22 showed multistream >> flat for Sign2Gloss and Sign2Gloss2Text).
 #
-# Depends on: /data/experiments/models/exp19_phoenix_multistream_sign2gloss/best_model.pt
-# Checkpoint saved to: /data/experiments/models/exp22_phoenix_multistream_sign2gloss2text/
+# Architecture:
+#   keypoints → multistream encoder (pose/lhand/rhand/face + motion)
+#             → CTC gloss head (auxiliary)
+#             → mBART decoder (receives encoder hidden states)
+#
+# Three-stage training (as in Maia repo):
+#   Stage 1 (epochs 0-20):   CTC-only, mBART frozen
+#   Stage 2 (epochs 20-40):  mBART unfreezes, encoder detached
+#   Stage 3 (remaining):     Full joint fine-tuning
+#
+# Differences from Exp 2 (flat Sign2Gloss2Text):
+#   - multistream encoder
+#   - ctc_smoothing=0.1
+#   - early_stop_patience=50
+#   - ctc_weight=0.3 (matches Maia's paper default)
+#   - dropout=0.2
+#
+# Checkpoint saved to: /data/experiments/models/exp32_phoenix_multistream_sign2gloss2text_maia/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp22-phoenix-multistream-s2g2t
+  name: train-exp32-phoenix-sign2gloss2text-maia
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -39,30 +53,32 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp22_phoenix_multistream_sign2gloss2text"
+          - "exp32_phoenix_sign2gloss2text_maia"
           - "--epochs"
-          - "300"
+          - "500"
           - "--decode"
           - "beam"
           - "--beam_width"
           - "10"
           - "--batch_size"
-          - "1"
+          - "4"
           - "--grad_accum"
-          - "16"
+          - "4"
           - "--fp16"
           - "--dim"
           - "256"
           - "--lr"
-          - "1e-4"
+          - "1e-3"
           - "--dropout"
-          - "0.3"
+          - "0.2"
           - "--num_workers"
-          - "2"
+          - "4"
           - "--multistream"
           - "--use_bart"
+          - "--phoenix_ctc_target"
+          - "gloss"
           - "--ctc_weight"
-          - "0.5"
+          - "0.3"
           - "--freeze_bart_epochs"
           - "20"
           - "--warmup_bart_epochs"
@@ -77,10 +93,8 @@ spec:
           - "0.1"
           - "--ctc_smoothing"
           - "0.1"
-          - "--pretrained_path"
-          - "/data/experiments/models/exp19_phoenix_multistream_sign2gloss/best_model.pt"
-          - "--freeze_strategy"
-          - "none"
+          - "--early_stop_patience"
+          - "50"
         env:
         - name: WANDB_API_KEY
           valueFrom:

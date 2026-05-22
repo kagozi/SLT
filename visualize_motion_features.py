@@ -54,11 +54,12 @@ for _a, _b in [(5, 9), (9, 13), (13, 17)]:   # palm arcs
 
 
 # ─── Colour palette ───────────────────────────────────────────────────────────
-BG          = '#0f0f1a'
-JOINT_COL   = '#4CAF50'   # green — right hand
-CONN_COL    = '#81C784'
-GHOST_JOINT = '#2a4a2e'
-GHOST_CONN  = '#1e3320'
+BG          = 'white'
+PANEL_BG    = '#f5f5f5'
+JOINT_COL   = '#2E7D32'   # deep green — right hand
+CONN_COL    = '#66BB6A'
+GHOST_JOINT = '#bbbbbb'
+GHOST_CONN  = '#dddddd'
 CMAP_VEL    = plt.cm.plasma      # velocity  magnitude
 CMAP_ACC    = plt.cm.cool        # accel magnitude
 
@@ -76,10 +77,9 @@ def _hand_conns_offset(offset_xy):
 
 
 def _draw_hand(ax, xy21, color_joint, color_conn, lw=1.4, s=22, alpha=1.0,
-               dark_bg=True):
+               dark_bg=False):
     """Draw a 21-joint hand skeleton on ax.  xy21: (21,2)."""
-    if dark_bg:
-        ax.set_facecolor(BG)
+    ax.set_facecolor(PANEL_BG)
     segs = _hand_conns_offset(xy21)
     if segs:
         ax.add_collection(LineCollection(segs, colors=color_conn,
@@ -88,7 +88,7 @@ def _draw_hand(ax, xy21, color_joint, color_conn, lw=1.4, s=22, alpha=1.0,
     mask = ~np.all(xy21 == 0, axis=1)
     if mask.any():
         ax.scatter(xy21[mask, 0], xy21[mask, 1], s=s,
-                   c=color_joint, edgecolors='white', linewidths=0.3,
+                   c=color_joint, edgecolors='#333333', linewidths=0.3,
                    alpha=alpha, zorder=4)
 
 
@@ -105,7 +105,7 @@ def _set_hand_limits(ax, xy21, pad_frac=0.30):
     ax.set_ylim(y1 + py, y0 - py)   # y inverted (image coords)
 
 
-def _clean_ax(ax, title='', title_color='#aaaaaa'):
+def _clean_ax(ax, title='', title_color='#555555'):
     ax.set_xticks([]); ax.set_yticks([])
     for sp in ax.spines.values():
         sp.set_visible(False)
@@ -126,16 +126,16 @@ def _draw_motion_arrows(ax, xy_base, delta, cmap, vmin, vmax,
     scale   : arrow scale factor (auto if None)
     ghost   : draw a ghost skeleton behind arrows
     """
-    ax.set_facecolor(BG)
+    ax.set_facecolor(PANEL_BG)
     if ghost:
         segs = _hand_conns_offset(xy_base)
         if segs:
             ax.add_collection(LineCollection(segs, colors=GHOST_CONN,
-                                             linewidths=1.2, alpha=0.45, zorder=2))
+                                             linewidths=1.2, alpha=0.9, zorder=2))
         mask = ~np.all(xy_base == 0, axis=1)
         if mask.any():
             ax.scatter(xy_base[mask, 0], xy_base[mask, 1], s=14,
-                       c=GHOST_JOINT, edgecolors='none', alpha=0.55, zorder=3)
+                       c=GHOST_JOINT, edgecolors='none', alpha=0.8, zorder=3)
 
     norm = Normalize(vmin=vmin, vmax=vmax)
     mag  = np.linalg.norm(delta, axis=-1)   # (21,)
@@ -144,7 +144,8 @@ def _draw_motion_arrows(ax, xy_base, delta, cmap, vmin, vmax,
     if scale is None:
         valid = xy_base[~np.all(xy_base == 0, axis=1)]
         if len(valid) > 1:
-            span = max(valid[:, 0].ptp(), valid[:, 1].ptp())
+            span = max(valid[:, 0].max() - valid[:, 0].min(),
+                       valid[:, 1].max() - valid[:, 1].min())
             max_mag = mag.max() if mag.max() > 0 else 1.0
             scale = (span * 0.18) / max_mag
         else:
@@ -158,7 +159,7 @@ def _draw_motion_arrows(ax, xy_base, delta, cmap, vmin, vmax,
                     arrowprops=dict(arrowstyle='->', color=col,
                                    lw=1.8, mutation_scale=8),
                     zorder=5)
-        ax.scatter(*pt, s=16, c=[col], edgecolors='white',
+        ax.scatter(*pt, s=16, c=[col], edgecolors='#333333',
                    linewidths=0.2, zorder=6)
 
     return norm, scale
@@ -241,8 +242,8 @@ def make_motion_figure(npy_path: str, output_dir: Path,
     n_rows  = 4
     heights = [1.0, 1.0, 1.0, 0.55]
     fig = plt.figure(figsize=(disp_frames * 2.6 + 0.6, 9.8),
-                     facecolor=BG)
-    fig.patch.set_facecolor(BG)
+                     facecolor='white')
+    fig.patch.set_facecolor('white')
 
     gs = fig.add_gridspec(n_rows, disp_frames,
                           height_ratios=heights,
@@ -264,7 +265,8 @@ def make_motion_figure(npy_path: str, output_dir: Path,
         ('Acceleration\n$\\Delta^2\\mathbf{x}_t','#03A9F4'),
         ('',                                     '#aaaaaa'),
     ]
-    for ri, (lbl, lcol) in enumerate(row_labels):
+    LABEL_COLORS = ['#2E7D32', '#C44E00', '#0277BD', '#444444']
+    for ri, ((lbl, _), lcol) in enumerate(zip(row_labels, LABEL_COLORS)):
         fig.text(label_x, row_mids[ri], lbl, va='center', ha='left',
                  fontsize=8, color=lcol, rotation=90, fontweight='bold')
 
@@ -324,7 +326,7 @@ def make_motion_figure(npy_path: str, output_dir: Path,
 
     # ── Row 3: Feature-concatenation schematic ────────────────────────
     ax_schem = fig.add_subplot(gs[3, :])
-    ax_schem.set_facecolor('#12121f')
+    ax_schem.set_facecolor('#f0f0f0')
     ax_schem.set_xlim(0, 1)
     ax_schem.set_ylim(0, 1)
     ax_schem.set_xticks([]); ax_schem.set_yticks([])
@@ -333,15 +335,15 @@ def make_motion_figure(npy_path: str, output_dir: Path,
 
     # Three equal blocks representing the feature streams
     blocks = [
-        (0.04, 0.29, '$\\mathbf{x}_t$\n(position)',     '#4CAF50',  '63-d',  'right-hand\nx, y, z'),
-        (0.37, 0.29, '$\\Delta\\mathbf{x}_t$\n(velocity)',   '#FF9800',  '63-d',  '1st difference'),
-        (0.70, 0.29, '$\\Delta^2\\mathbf{x}_t$\n(accel.)',   '#03A9F4',  '63-d',  '2nd difference'),
+        (0.04, 0.29, '$\\mathbf{x}_t$\n(position)',        '#2E7D32',  '63-d',  'right-hand\nx, y, z'),
+        (0.37, 0.29, '$\\Delta\\mathbf{x}_t$\n(velocity)',  '#C44E00',  '63-d',  '1st difference'),
+        (0.70, 0.29, '$\\Delta^2\\mathbf{x}_t$\n(accel.)',  '#0277BD',  '63-d',  '2nd difference'),
     ]
     bw, bh = 0.27, 0.68
     for bx, by, label, col, dim_label, sublabel in blocks:
         rect = mpatches.FancyBboxPatch((bx, by), bw, bh,
                                        boxstyle='round,pad=0.01',
-                                       facecolor=col + '22',
+                                       facecolor=col + '18',
                                        edgecolor=col, linewidth=2,
                                        transform=ax_schem.transAxes,
                                        clip_on=False)
@@ -352,33 +354,33 @@ def make_motion_figure(npy_path: str, output_dir: Path,
                       transform=ax_schem.transAxes)
         ax_schem.text(bx + bw / 2, by + bh * 0.38, dim_label,
                       ha='center', va='center', fontsize=10,
-                      color='white', fontweight='bold',
+                      color='#111111', fontweight='bold',
                       transform=ax_schem.transAxes)
         ax_schem.text(bx + bw / 2, by + bh * 0.16, sublabel,
                       ha='center', va='center', fontsize=7.5,
-                      color='#aaaaaa',
+                      color='#555555',
                       transform=ax_schem.transAxes)
 
     # Plus signs between blocks
     for px in [0.33, 0.66]:
         ax_schem.text(px, 0.29 + bh / 2, '⊕', ha='center', va='center',
-                      fontsize=14, color='#888888',
+                      fontsize=14, color='#555555',
                       transform=ax_schem.transAxes)
 
     # Arrow + label on the right
     ax_schem.annotate('', xy=(0.985, 0.29 + bh / 2),
                       xytext=(0.975, 0.29 + bh / 2),
                       xycoords='axes fraction',
-                      arrowprops=dict(arrowstyle='->', color='#aaaaaa', lw=2))
+                      arrowprops=dict(arrowstyle='->', color='#555555', lw=2))
     ax_schem.text(0.995, 0.29 + bh / 2,
                   '189-d\nper stream',
                   ha='left', va='center', fontsize=8,
-                  color='white', transform=ax_schem.transAxes)
+                  color='#111111', transform=ax_schem.transAxes)
 
     ax_schem.text(0.5, 0.03,
                   'Right-hand stream  (21 joints × 3 coords × 3 features = 189-d)',
                   ha='center', va='bottom', fontsize=8,
-                  color='#666677', transform=ax_schem.transAxes)
+                  color='#777777', transform=ax_schem.transAxes)
 
     # ── Colourbars ────────────────────────────────────────────────────
     cb_ax_v = fig.add_axes([0.91, 0.72, 0.012, 0.18])
@@ -390,28 +392,28 @@ def make_motion_figure(npy_path: str, output_dir: Path,
         sm = ScalarMappable(cmap=cmap, norm=Normalize(vmin=vmin, vmax=vmax))
         cb = plt.colorbar(sm, cax=cb_ax)
         cb.set_label(label, fontsize=7, color=col, labelpad=3)
-        cb.ax.yaxis.set_tick_params(color='#888888', labelsize=6, labelcolor='#888888')
-        cb.outline.set_visible(False)
-        cb.ax.set_facecolor(BG)
+        cb.ax.yaxis.set_tick_params(color='#555555', labelsize=6, labelcolor='#555555')
+        cb.outline.set_edgecolor('#cccccc')
+        cb.ax.set_facecolor('white')
 
     # ── Title ─────────────────────────────────────────────────────────
     seq_name = Path(npy_path).stem
     fig.suptitle(
         f'Motion feature augmentation  ·  right-hand stream  '
         f'[{disp_frames} consecutive frames  ·  frames {start}–{start+disp_frames-1}]',
-        fontsize=10, color='#ccccdd', y=0.97,
+        fontsize=10, color='#222222', y=0.97,
     )
 
     # ── Legend ────────────────────────────────────────────────────────
     legend_handles = [
         mpatches.Patch(color=JOINT_COL,  label='Position $\\mathbf{x}_t$'),
-        mpatches.Patch(color='#FF9800',  label='Velocity $\\Delta\\mathbf{x}_t$'),
-        mpatches.Patch(color='#03A9F4',  label='Acceleration $\\Delta^2\\mathbf{x}_t$'),
+        mpatches.Patch(color='#C44E00',  label='Velocity $\\Delta\\mathbf{x}_t$'),
+        mpatches.Patch(color='#0277BD',  label='Acceleration $\\Delta^2\\mathbf{x}_t$'),
     ]
     fig.legend(handles=legend_handles, loc='lower right', ncol=3,
-               fontsize=8, framealpha=0.12,
-               facecolor='#1a1a2e', edgecolor='#333344',
-               labelcolor='white', bbox_to_anchor=(0.90, 0.005))
+               fontsize=8, framealpha=0.9,
+               facecolor='white', edgecolor='#cccccc',
+               labelcolor='#333333', bbox_to_anchor=(0.90, 0.005))
 
     # ── Save ──────────────────────────────────────────────────────────
     stem = output_dir / 'motion_features_vis'

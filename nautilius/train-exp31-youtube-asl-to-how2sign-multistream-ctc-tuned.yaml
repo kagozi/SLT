@@ -1,24 +1,23 @@
-# Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
+# Experiment 31: YouTube-ASL → How2Sign — Multistream CTC Transfer (tuned)
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
-#   - No ground-truth gloss annotations used
-#   - CTC loss directly on normalized German text word tokens
-#   - Flat single-stream transformer encoder (no multistream, no motion)
-#   - No pretrained seq2seq decoder (pure CTC)
+# Fine-tunes the Exp 29 (YouTube-ASL multistream CTC tuned) checkpoint on How2Sign.
+# The encoder is warm-started from Exp 29; the CTC head is re-initialized
+# (vocab mismatch between YouTube-ASL and How2Sign English targets).
 #
-# This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
-# isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# Enables a clean comparison within the CTC-on-text paradigm:
+#   Exp 27 (How2Sign multistream scratch)  vs  Exp 31 (YouTube-ASL pretrained)
 #
-# Key difference from our Exp 1 (Sign2Gloss):
-#   Exp 1 uses German gloss tokens as CTC target
-#   Exp 23 uses normalized German translation words as CTC target
+# Tuned fine-tuning LR (1e-4) to prevent catastrophic forgetting of the
+# pretrained multistream representations.
 #
-# Checkpoint saved to: /data/experiments/models/exp23_phoenix_flat_ctc_german/
+# ⚠️  DO NOT SUBMIT until Exp 29 checkpoint exists at:
+#   /data/experiments/models/exp29_youtube_asl_multistream_ctc_english_tuned/best_exp29_youtube_asl_multistream_ctc_english_tuned.pt
+#
+# Checkpoint saved to: /data/experiments/models/exp31_youtube_asl_to_how2sign_multistream_ctc_tuned/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp23-phoenix-flat-ctc-german
+  name: train-exp31-youtube-asl-to-how2sign-multistream-ctc-tuned
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -33,15 +32,15 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp23_phoenix_flat_ctc_german"
+          - "exp31_youtube_asl_to_how2sign_multistream_ctc_tuned"
           - "--epochs"
-          - "500"
+          - "200"
           - "--decode"
           - "beam"
           - "--beam_width"
@@ -53,20 +52,27 @@ spec:
           - "--fp16"
           - "--dim"
           - "256"
+          - "--max_frames"
+          - "300"
           - "--lr"
-          - "1e-3"
+          - "1e-4"
           - "--dropout"
-          - "0.3"
+          - "0.2"
           - "--num_workers"
           - "4"
-          - "--phoenix_ctc_target"
+          - "--multistream"
+          - "--unglossed_ctc_target"
           - "translation"
           - "--ffn_expand"
           - "4"
           - "--ctc_smoothing"
-          - "0.1"
+          - "0.05"
           - "--early_stop_patience"
           - "50"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp29_youtube_asl_multistream_ctc_english_tuned/best_exp29_youtube_asl_multistream_ctc_english_tuned.pt"
+          - "--freeze_strategy"
+          - "none"
         env:
         - name: WANDB_API_KEY
           valueFrom:

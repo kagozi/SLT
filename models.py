@@ -96,6 +96,24 @@ class TransformerBlock(nn.Module):
         return x, mask
 
 
+class ConformerBlock(nn.Module):
+    """Paired Conv + Transformer block (Maia-style interleaved architecture).
+
+    Maia's ASL2Text encoder interleaves conv and self-attention at every depth
+    level rather than running all conv blocks first, then all transformer blocks.
+    This block is the unit that gets stacked N times to build that encoder.
+    """
+    def __init__(self, dim, conv_kernel, num_heads=8, ffn_expand=4, dropout=0.0):
+        super().__init__()
+        self.conv = ConvBlock(dim, conv_kernel, dropout=dropout)
+        self.transformer = TransformerBlock(dim, num_heads, ffn_expand, dropout)
+
+    def forward(self, x, mask=None):
+        x, mask = self.conv(x, mask)
+        x, mask = self.transformer(x, mask)
+        return x, mask
+
+
 class PositionalEncoding(nn.Module):
     def __init__(self, dim, max_len=5000):
         super().__init__()
@@ -285,27 +303,39 @@ class SignLanguageTransformer(nn.Module):
     def __init__(self, input_dim=225, dim=192, num_classes=1085, max_frames=500,
                  dropout=0.2, use_bart=False, bart_model="facebook/bart-base",
                  ctc_weight=0.3, ffn_expand=4, label_smoothing=0.1,
-                 use_motion=False):
+                 use_motion=False, arch='sequential'):
         super().__init__()
         self.use_bart   = use_bart
         self.ctc_weight = ctc_weight
         self.dim        = dim
         self.use_motion = use_motion
+        self.arch       = arch
 
         proj_in = input_dim * 3 if use_motion else input_dim
         self.input_proj = nn.Linear(proj_in, dim, bias=False)
         self.pos_encoding = PositionalEncoding(dim, max_frames)
         self.norm = nn.LayerNorm(dim)
 
-        self.conv_blocks = nn.ModuleList([
-            ConvBlock(dim, 11, dropout=dropout),
-            ConvBlock(dim, 5, dropout=dropout),
-            ConvBlock(dim, 3, dropout=dropout),
-        ])
-        self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(dim, num_heads=8, expand=ffn_expand, dropout=dropout)
-            for _ in range(4)
-        ])
+        if arch == 'interleaved':
+            # 6 paired (Conv + Transformer) blocks, alternating kernels — replicates
+            # Maia et al. ASL2Text encoder (6 blocks, kernels 11 and 5).
+            self.conv_blocks = nn.ModuleList([
+                ConformerBlock(dim, k, num_heads=8, ffn_expand=ffn_expand, dropout=dropout)
+                for k in [11, 5, 11, 5, 11, 5]
+            ])
+            # No standalone transformer blocks — transformers are embedded in each ConformerBlock.
+            # An empty ModuleList is kept so multistream subclass can safely rebuild it.
+            self.transformer_blocks = nn.ModuleList()
+        else:
+            self.conv_blocks = nn.ModuleList([
+                ConvBlock(dim, 11, dropout=dropout),
+                ConvBlock(dim, 5, dropout=dropout),
+                ConvBlock(dim, 3, dropout=dropout),
+            ])
+            self.transformer_blocks = nn.ModuleList([
+                TransformerBlock(dim, num_heads=8, expand=ffn_expand, dropout=dropout)
+                for _ in range(4)
+            ])
 
         # CTC gloss head
         self.head = nn.Sequential(
@@ -343,8 +373,10 @@ class SignLanguageTransformer(nn.Module):
         x = self.pos_encoding(x)
         for blk in self.conv_blocks:
             x, mask = blk(x, mask)
-        for blk in self.transformer_blocks:
-            x, mask = blk(x, mask)
+        # interleaved: transformers already run inside each ConformerBlock above
+        if self.arch == 'sequential':
+            for blk in self.transformer_blocks:
+                x, mask = blk(x, mask)
         return x, mask
 
     def forward(self, x, mask=None, translation_targets=None):
@@ -549,7 +581,8 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
                  bart_model: str = 'facebook/bart-base',
                  ctc_weight: float = 0.3, ffn_expand: int = 4,
                  label_smoothing: float = 0.1,
-                 use_motion: bool = False):   # use_motion ignored; motion always on
+                 use_motion: bool = False,   # use_motion ignored; motion always on
+                 arch: str = 'sequential'):
         # Bootstrap shared components (pos_encoding, transformer_blocks, head,
         # translation_head) via parent with a dummy input_dim=1.
         super().__init__(
@@ -558,9 +591,19 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
             bart_model=bart_model, ctc_weight=ctc_weight,
             ffn_expand=ffn_expand, label_smoothing=label_smoothing,
             use_motion=False,   # velocity handled per-stream in encode()
+            arch=arch,
         )
         # Remove flat-encoder components (replaced by per-stream equivalents)
         del self.input_proj, self.norm, self.conv_blocks
+
+        # For interleaved arch the parent left transformer_blocks empty (transformers
+        # are embedded per-stream in ConformerBlocks).  Rebuild them here for the
+        # shared global-context stage that runs after cross-stream fusion.
+        if arch == 'interleaved':
+            self.transformer_blocks = nn.ModuleList([
+                TransformerBlock(dim, num_heads=8, expand=ffn_expand, dropout=dropout)
+                for _ in range(4)
+            ])
 
         # Per-stream input dims (raw features × 3 after velocity + acceleration concat)
         pose_d = 39 * 3    # 117
@@ -577,8 +620,16 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
         self.norm_rhand = nn.LayerNorm(dim)
         self.norm_face  = nn.LayerNorm(dim)
 
-        # Per-stream temporal ConvBlocks (same kernel schedule as flat encoder)
+        # Per-stream block stacks.
+        # interleaved: 3 ConformerBlocks (Conv+Transformer) per stream — each stream
+        #   gets Maia-style local context before cross-stream fusion.
+        # sequential: 3 ConvBlocks per stream (current default).
         def _conv_stack():
+            if arch == 'interleaved':
+                return nn.ModuleList([
+                    ConformerBlock(dim, k, num_heads=8, ffn_expand=ffn_expand, dropout=dropout)
+                    for k in [11, 5, 11]
+                ])
             return nn.ModuleList([
                 ConvBlock(dim, 11, dropout=dropout),
                 ConvBlock(dim, 5,  dropout=dropout),

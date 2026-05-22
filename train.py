@@ -78,7 +78,7 @@ def _fig_to_wandb(fig) -> wandb.Image:
 from dataset import PhoenixSignDataset
 from dataset_how2sign import How2SignDataset
 from dataset_youtube_asl import YouTubeASLDataset
-from models import SignLanguageTransformer, MultiStreamSignLanguageTransformer
+from models import SignLanguageTransformer, MultiStreamSignLanguageTransformer, ConformerBlock
 from utils import GlossTokenizer, Trainer, collate_fn, ctc_greedy_decode, ctc_beam_decode
 
 
@@ -584,6 +584,13 @@ def main():
                              'CTC logits (two forward passes per batch). '
                              '0=disabled. Recommended: 5.0 for CTC+BART exps '
                              '(Liang et al., NeurIPS 2021).')
+    parser.add_argument('--arch', type=str, default='sequential',
+                        choices=['sequential', 'interleaved'],
+                        help='Encoder block layout. sequential (default): 3 ConvBlocks then '
+                             '4 TransformerBlocks. interleaved: 6 paired ConformerBlocks '
+                             '(Conv+Transformer alternating kernels 11/5) — replicates Maia '
+                             'et al. ASL2Text encoder. For --multistream, each stream gets 3 '
+                             'ConformerBlocks then shared 4 TransformerBlocks after fusion.')
     parser.add_argument('--ctc_smoothing', type=float, default=0.1,
                         help='Uniform label smoothing on CTC loss (default 0.1). '
                             'Set 0.0 to disable.')
@@ -793,15 +800,16 @@ def main():
         ctc_weight=args.ctc_weight,
         ffn_expand=args.ffn_expand,
         label_smoothing=args.label_smoothing,
+        arch=args.arch,
     )
     if args.multistream:
         # Multi-stream encoder always computes per-stream velocity; use_motion ignored
         model = MultiStreamSignLanguageTransformer(**_model_kwargs)
-        print("  🔀 Encoder: MultiStream (pose/lhand/rhand/face + per-stream velocity)")
+        print(f"  🔀 Encoder: MultiStream (pose/lhand/rhand/face + per-stream velocity) [{args.arch}]")
     else:
         model = SignLanguageTransformer(use_motion=args.use_motion, **_model_kwargs)
         motion_tag = " + velocity" if args.use_motion else ""
-        print(f"  🔀 Encoder: Flat 225-d{motion_tag}")
+        print(f"  🔀 Encoder: Flat 225-d{motion_tag} [{args.arch}]")
     
     # ── Load pretrained encoder (transfer learning) ──
     if args.pretrained_path and args.pretrained_path.lower() != 'none':

@@ -26,3 +26,5 @@ node_modules
 manuscript_architecture_diagram.py
 architecture_*
 *.docx
+figures/*
+references/*

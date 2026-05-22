@@ -97,17 +97,20 @@ FACE_CONNS = [
 
 # ─── Colour palette (matches sample.ipynb) ───────────────────────────
 
+BG          = 'white'
+PANEL_BG    = '#f7f7f7'
+
 JOINT_COLORS = {
-    'pose':       '#2196F3',  # blue
-    'left_hand':  '#FF9800',  # orange
-    'right_hand': '#4CAF50',  # green
-    'face':       '#E91E63',  # pink
+    'pose':       '#1565C0',  # deep blue
+    'left_hand':  '#E65100',  # deep orange
+    'right_hand': '#2E7D32',  # deep green
+    'face':       '#AD1457',  # deep pink
 }
 CONN_COLORS = {
-    'pose':       '#64B5F6',
-    'left_hand':  '#FFB74D',
-    'right_hand': '#81C784',
-    'face':       '#F48FB1',
+    'pose':       '#42A5F5',
+    'left_hand':  '#FFA726',
+    'right_hand': '#66BB6A',
+    'face':       '#EC407A',
 }
 JOINT_SIZES = {'pose': 35, 'left_hand': 18, 'right_hand': 18, 'face': 14}
 
@@ -142,10 +145,9 @@ def _reattach_hands(xy: np.ndarray) -> np.ndarray:
 # ─── Core skeleton plot ───────────────────────────────────────────────
 
 def plot_skeleton(joints_75x3: np.ndarray, ax, title: str = '',
-                  dark_bg: bool = True):
+                  dark_bg: bool = False):
     """Draw 75-joint skeleton on ax.  joints_75x3 shape: (75, 3)."""
-    if dark_bg:
-        ax.set_facecolor('#1a1a2e')
+    ax.set_facecolor(PANEL_BG)
 
     xy = _reattach_hands(joints_75x3[:, :2])   # x, y with hands repositioned
 
@@ -175,12 +177,11 @@ def plot_skeleton(joints_75x3: np.ndarray, ax, title: str = '',
         mask = ~np.all(pts == 0, axis=1)
         if mask.any():
             ax.scatter(pts[mask, 0], pts[mask, 1], s=sz, c=col, zorder=3,
-                       alpha=0.95, edgecolors='white', linewidths=0.3)
+                       alpha=0.95, edgecolors='#333333', linewidths=0.3)
 
     ax.set_aspect('equal', adjustable='box')
     ax.invert_yaxis()
-    ax.set_title(title, fontsize=9, color='white' if dark_bg else 'black',
-                 pad=4)
+    ax.set_title(title, fontsize=9, color='#333333', pad=4)
     ax.set_xticks([]); ax.set_yticks([])
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -228,13 +229,12 @@ def pick_active_frames(kps: np.ndarray, n: int) -> list:
 # ─── Main figure function ─────────────────────────────────────────────
 
 def _draw_part_cell(ax, xy: np.ndarray, rng: slice, conns: list,
-                    color_key: str, dark_bg: bool = True):
+                    color_key: str, dark_bg: bool = False):
     """
     Draw a single body-part cell zoomed to that part's bounding box.
     xy: (75, 2) global coordinates for one frame.
     """
-    if dark_bg:
-        ax.set_facecolor('#1a1a2e')
+    ax.set_facecolor(PANEL_BG)
 
     segs = []
     for i, j in conns:
@@ -243,14 +243,14 @@ def _draw_part_cell(ax, xy: np.ndarray, rng: slice, conns: list,
         segs.append([xy[i], xy[j]])
     if segs:
         ax.add_collection(LineCollection(segs, colors=CONN_COLORS[color_key],
-                                         linewidths=1.4, alpha=0.75, zorder=2))
+                                         linewidths=1.4, alpha=0.85, zorder=2))
 
     pts  = xy[rng]
     mask = ~np.all(pts == 0, axis=1)
     if mask.any():
         ax.scatter(pts[mask, 0], pts[mask, 1],
                    s=18, c=JOINT_COLORS[color_key],
-                   edgecolors='white', linewidths=0.3, zorder=5, alpha=0.95)
+                   edgecolors='#333333', linewidths=0.3, zorder=5, alpha=0.95)
 
     valid = pts[mask] if mask.any() else pts
     if len(valid):
@@ -299,8 +299,7 @@ def make_figure(sequences: list, root_dir: Path, split: str,
             print(f'  [SKIP] keypoints not found: {kps_path}')
             continue
         if not frame_dir.exists():
-            print(f'  [SKIP] frame dir not found: {frame_dir}')
-            continue
+            print(f'  [NOTE] frame dir not found — skipping raw frames: {frame_dir}')
 
         kps = np.load(kps_path)           # (T, 225)
         if kps.ndim == 2 and kps.shape[1] == 225:
@@ -312,16 +311,29 @@ def make_figure(sequences: list, root_dir: Path, split: str,
         frame_indices = pick_active_frames(kps, n_frames)
         raw_imgs, _ = load_frames(frame_dir, frame_indices)
 
-        # ── figure layout: 6 rows ──────────────────────────────────
-        # height_ratios: raw & skeleton slightly taller than stream cells
+        # Detect whether any raw frames are actually available
+        has_raw = any(img is not None for img in raw_imgs)
+
+        # ── figure layout ──────────────────────────────────────────
+        # If no RGB frames are available, omit the raw-frame row entirely.
         n_stream = len(_STREAM_PARTS)
-        height_ratios = [1.3, 1.3] + [0.85] * n_stream
+        if has_raw:
+            n_rows       = 2 + n_stream
+            height_ratios = [1.3, 1.3] + [0.85] * n_stream
+            skel_row     = 1
+            stream_start = 2
+        else:
+            n_rows       = 1 + n_stream
+            height_ratios = [1.3] + [0.85] * n_stream
+            skel_row     = 0
+            stream_start = 1
 
-        fig = plt.figure(figsize=(n_frames * 2.8, 5.6 + n_stream * 1.9),
-                         facecolor='#0f0f1a')
-        fig.patch.set_facecolor('#0f0f1a')
+        fig = plt.figure(figsize=(n_frames * 2.8,
+                                  (3.0 if has_raw else 1.7) + n_stream * 1.9),
+                         facecolor=BG)
+        fig.patch.set_facecolor(BG)
 
-        gs = fig.add_gridspec(2 + n_stream, n_frames,
+        gs = fig.add_gridspec(n_rows, n_frames,
                               height_ratios=height_ratios,
                               hspace=0.10, wspace=0.04,
                               top=0.94, bottom=0.01,
@@ -336,39 +348,40 @@ def make_figure(sequences: list, root_dir: Path, split: str,
             cum += h
 
         label_x = 0.005
-        fig.text(label_x, row_mids[0], 'Raw\nframe',      va='center', ha='left',
-                 fontsize=8, color='#aaaaaa', rotation=90)
-        fig.text(label_x, row_mids[1], 'Full\nskeleton',  va='center', ha='left',
-                 fontsize=8, color='#aaaaaa', rotation=90)
+        label_ri = 0
+        if has_raw:
+            fig.text(label_x, row_mids[label_ri], 'Raw\nframe', va='center', ha='left',
+                     fontsize=8, color='#444444', rotation=90)
+            label_ri += 1
+        fig.text(label_x, row_mids[label_ri], 'Full\nskeleton', va='center', ha='left',
+                 fontsize=8, color='#444444', rotation=90)
         for si, (part_name, *_) in enumerate(_STREAM_PARTS):
-            fig.text(label_x, row_mids[2 + si], part_name, va='center', ha='left',
-                     fontsize=8, color='#aaaaaa', rotation=90)
+            fig.text(label_x, row_mids[label_ri + 1 + si], part_name,
+                     va='center', ha='left', fontsize=8, color='#444444', rotation=90)
 
         for col, (fidx, raw_img) in enumerate(zip(frame_indices, raw_imgs)):
             xy = kps_3d[fidx, :, :2]
 
-            # ── row 0: raw frame ──────────────────────────────────
-            ax_raw = fig.add_subplot(gs[0, col])
-            ax_raw.set_facecolor('#0f0f1a')
-            if raw_img is not None:
+            # ── row 0: raw frame (only when available) ────────────
+            if has_raw:
+                ax_raw = fig.add_subplot(gs[0, col])
+                ax_raw.set_facecolor(BG)
                 ax_raw.imshow(raw_img)
-            else:
-                ax_raw.text(0.5, 0.5, 'frame\nnot found',
-                            ha='center', va='center', color='#666666',
-                            transform=ax_raw.transAxes, fontsize=8)
-            ax_raw.set_xticks([]); ax_raw.set_yticks([])
-            ax_raw.set_title(f'frame {fidx}', fontsize=8, color='#888888', pad=3)
-            for spine in ax_raw.spines.values():
-                spine.set_edgecolor('#333344'); spine.set_linewidth(0.5)
+                ax_raw.set_xticks([]); ax_raw.set_yticks([])
+                ax_raw.set_title(f'frame {fidx}', fontsize=8, color='#555555', pad=3)
+                for spine in ax_raw.spines.values():
+                    spine.set_edgecolor('#cccccc'); spine.set_linewidth(0.5)
 
-            # ── row 1: full skeleton ──────────────────────────────
-            ax_sk = fig.add_subplot(gs[1, col])
-            plot_skeleton(kps_3d[fidx], ax_sk, dark_bg=True)
+            # ── full skeleton ──────────────────────────────────────
+            ax_sk = fig.add_subplot(gs[skel_row, col])
+            plot_skeleton(kps_3d[fidx], ax_sk)
+            if not has_raw:
+                ax_sk.set_title(f'frame {fidx}', fontsize=8, color='#555555', pad=3)
 
-            # ── rows 2-5: per-part stream ─────────────────────────
+            # ── per-part stream ────────────────────────────────────
             for si, (_, rng, conns, color_key) in enumerate(_STREAM_PARTS):
-                ax_p = fig.add_subplot(gs[2 + si, col])
-                _draw_part_cell(ax_p, xy, rng, conns, color_key, dark_bg=True)
+                ax_p = fig.add_subplot(gs[stream_start + si, col])
+                _draw_part_cell(ax_p, xy, rng, conns, color_key)
 
         # Legend
         patches = [
@@ -378,14 +391,14 @@ def make_figure(sequences: list, root_dir: Path, split: str,
             mpatches.Patch(color=JOINT_COLORS['face'],       label='Face'),
         ]
         fig.legend(handles=patches, loc='lower right', ncol=4,
-                   fontsize=8, framealpha=0.15,
-                   facecolor='#1a1a2e', edgecolor='#333344',
-                   labelcolor='white', bbox_to_anchor=(0.99, 0.0))
+                   fontsize=8, framealpha=0.8,
+                   facecolor='white', edgecolor='#cccccc',
+                   labelcolor='#333333', bbox_to_anchor=(0.99, 0.0))
 
         fig.suptitle(
             f'PHOENIX-2014-T  ·  {seq_name}  '
             f'[75 landmarks · 225-d features · multistream]',
-            fontsize=10, color='#ccccdd', y=0.97,
+            fontsize=10, color='#222222', y=0.97,
         )
 
         out_stem = output_dir / f'phoenix_vis_{seq_name}'
