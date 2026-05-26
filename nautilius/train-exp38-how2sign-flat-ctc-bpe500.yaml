@@ -1,0 +1,96 @@
+# Experiment 38: How2Sign — Flat CTC English with BPE-500 tokenizer
+#
+# Identical to Exp 26 (flat CTC English) except CTC target uses BPE subword
+# tokenization (vocab=500) instead of word-level (vocab=9945).
+#
+# Motivation: Exp 26 scored BLEU-4 ≈ 0 because the 9945-token word vocabulary
+# is too large for CTC's conditional independence assumption. BPE-500 reduces
+# the search space ~20x, giving CTC a realistic chance of learning 4-gram structure.
+#
+# Checkpoint saved to: /data/experiments/models/exp38_how2sign_flat_ctc_bpe500/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp38-how2sign-flat-ctc-bpe500
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "how2sign"
+          - "--root_dir"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp38_how2sign_flat_ctc_bpe500"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "8"
+          - "--grad_accum"
+          - "2"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "1e-3"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--unglossed_ctc_target"
+          - "translation"
+          - "--ctc_tokenizer"
+          - "bpe"
+          - "--bpe_vocab_size"
+          - "500"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "50"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

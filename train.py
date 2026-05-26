@@ -79,7 +79,7 @@ from dataset import PhoenixSignDataset
 from dataset_how2sign import How2SignDataset
 from dataset_youtube_asl import YouTubeASLDataset
 from models import SignLanguageTransformer, MultiStreamSignLanguageTransformer, ConformerBlock
-from utils import GlossTokenizer, Trainer, collate_fn, ctc_greedy_decode, ctc_beam_decode
+from utils import GlossTokenizer, BPETokenizer, Trainer, collate_fn, ctc_greedy_decode, ctc_beam_decode
 
 
 # ─── Experiment Naming ───────────────────────────────────────────────
@@ -510,6 +510,12 @@ def main():
                              'English text, translation_keywords uses content-word English.')
     parser.add_argument('--unglossed_min_freq', type=int, default=2,
                         help='Minimum token frequency for unglossed CTC vocabularies.')
+    parser.add_argument('--ctc_tokenizer', type=str, default='word',
+                        choices=['word', 'bpe'],
+                        help='CTC tokenizer type. word=word-level (default); '
+                             'bpe=BPE subword (recommended for open-domain datasets like How2Sign).')
+    parser.add_argument('--bpe_vocab_size', type=int, default=500,
+                        help='BPE vocabulary size when --ctc_tokenizer bpe is used.')
     parser.add_argument('--phoenix_ctc_target', type=str, default='gloss',
                         choices=['gloss', 'translation'],
                         help='CTC target for PHOENIX dataset: gloss uses ground-truth gloss '
@@ -702,7 +708,10 @@ def main():
             elif 'PSEUDOGLOSS' in df_yt.columns:
                 ctc_texts = df_yt['PSEUDOGLOSS'].dropna().tolist()
         if ctc_texts:
-            tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
+            if args.ctc_tokenizer == 'bpe':
+                tokenizer = BPETokenizer(ctc_texts, vocab_size=args.bpe_vocab_size)
+            else:
+                tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
             print(f"  YouTubeASL {args.unglossed_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
         else:
             print("  YouTubeASL: no CTC targets — using dummy tokenizer (glossless mode)")
@@ -725,7 +734,10 @@ def main():
             elif 'PSEUDOGLOSS' in df_h2s.columns:
                 ctc_texts = df_h2s['PSEUDOGLOSS'].dropna().tolist()
         if ctc_texts:
-            tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
+            if args.ctc_tokenizer == 'bpe':
+                tokenizer = BPETokenizer(ctc_texts, vocab_size=args.bpe_vocab_size)
+            else:
+                tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
             print(f"  How2Sign {args.unglossed_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
         else:
             print("  How2Sign: no CTC targets — using dummy tokenizer (glossless mode)")

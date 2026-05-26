@@ -1132,3 +1132,61 @@ class GlossTokenizer:
     @property
     def vocab_size(self):
         return len(self.gloss_to_idx)
+
+
+class BPETokenizer:
+    """BPE subword tokenizer for CTC. Token 0=<blank>; BPE vocab shifted by +1.
+
+    Reduces the CTC search space dramatically vs word-level tokenization —
+    e.g. 500 subword tokens instead of 9945 word types for How2Sign.
+    """
+
+    def __init__(self, sentences=None, vocab_size=500):
+        from tokenizers import Tokenizer
+        from tokenizers.models import BPE
+        from tokenizers.trainers import BpeTrainer
+        from tokenizers.pre_tokenizers import Whitespace
+        from tokenizers.normalizers import Lowercase, Sequence as NormSequence
+
+        self._tok = Tokenizer(BPE(unk_token='<unk>'))
+        self._tok.normalizer = NormSequence([Lowercase()])
+        self._tok.pre_tokenizer = Whitespace()
+        self._vocab_size = vocab_size
+
+        if sentences is not None:
+            trainer = BpeTrainer(
+                vocab_size=vocab_size - 1,  # reserve slot 0 for CTC blank
+                special_tokens=['<unk>'],
+                min_frequency=2,
+            )
+            self._tok.train_from_iterator(
+                (s.strip() for s in sentences if isinstance(s, str) and s.strip()),
+                trainer=trainer,
+            )
+        print(f"BPETokenizer: {self.vocab_size} tokens (target vocab_size={vocab_size})")
+
+    def encode(self, text):
+        if not isinstance(text, str):
+            text = ' '.join(text)
+        ids = self._tok.encode(text.strip()).ids
+        return torch.tensor([i + 1 for i in ids], dtype=torch.long)  # shift: 0 reserved for blank
+
+    def decode(self, indices):
+        if torch.is_tensor(indices):
+            indices = indices.cpu().numpy()
+        if isinstance(indices, (int, np.integer)):
+            indices = [int(indices)]
+        bpe_ids = [int(i) - 1 for i in indices if int(i) > 0]  # unshift, drop blank
+        bpe_ids = [i for i in bpe_ids if 0 <= i < self._tok.get_vocab_size()]
+        if not bpe_ids:
+            return ''
+        return self._tok.decode(bpe_ids)
+
+    @property
+    def vocab_size(self):
+        return self._tok.get_vocab_size() + 1  # +1 for blank at index 0
+
+    @property
+    def gloss_to_idx(self):
+        vocab = self._tok.get_vocab()
+        return {'<blank>': 0, **{k: v + 1 for k, v in vocab.items()}}
