@@ -1,11 +1,12 @@
-# Experiment 4: How2Sign — Glossless Sign2Text baseline (BART only)
-# ASL dataset, no gloss/keyword CTC supervision. This is the clean ablation
-# against Exp21's keyword-CTC + BART setup.
-# Run AFTER How2Sign holistic features are available on the PVC.
+# Experiment 34: How2Sign — Multistream BART with keyword CTC auxiliary
+#
+# Main replacement for Exp 26/27.  The CTC head learns a compact content-word
+# alignment signal, while BART generates the final English sentence and supplies
+# the translation BLEU metric that matters for glossless SLT.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp4-how2sign-glossless
+  name: train-exp34-how2sign-ms-bart-keyword-ctc
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -26,48 +27,49 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp4_how2sign_glossless"
+          - "exp34_how2sign_ms_bart_keyword_ctc"
           - "--epochs"
-          - "120"
+          - "300"
           - "--decode"
           - "beam"
           - "--beam_width"
-          - "4"
+          - "5"
           - "--batch_size"
-          - "16"
+          - "4"
           - "--grad_accum"
-          - "2"
-          - "--fp16"
+          - "4"
           - "--dim"
           - "256"
           - "--lr"
-          - "5e-5"
-          - "--max_frames"
-          - "300"
-          - "--num_workers"
-          - "2"
-          - "--multistream"
+          - "1e-4"
           - "--dropout"
-          - "0.3"
+          - "0.2"
+          - "--num_workers"
+          - "4"
+          - "--multistream"
           - "--use_bart"
           - "--ctc_weight"
-          - "0.0"
+          - "0.2"
           - "--freeze_bart_epochs"
-          - "0"
-          - "--ffn_expand"
-          - "4"
-          - "--label_smoothing"
-          - "0.1"
-          - "--contrastive_weight"
-          - "0.05"
-          - "--ctc_smoothing"
-          - "0.0"
-          - "--early_stop_patience"
-          - "12"
-          - "--unglossed_min_freq"
-          - "5"
+          - "10"
+          - "--warmup_bart_epochs"
+          - "10"
           - "--unglossed_ctc_target"
           - "translation_keywords"
+          - "--unglossed_min_freq"
+          - "2"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.02"
+          - "--label_smoothing"
+          - "0.1"
+          - "--joint_encoder_lr_scale"
+          - "0.1"
+          - "--joint_bart_lr_scale"
+          - "0.5"
+          - "--early_stop_patience"
+          - "60"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -85,11 +87,11 @@ spec:
         resources:
           requests:
             cpu: "2"
-            memory: "9Gi"
+            memory: "12Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "2"
-            memory: "10Gi"
+            memory: "12Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

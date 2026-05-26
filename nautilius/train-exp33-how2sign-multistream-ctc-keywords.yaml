@@ -1,12 +1,14 @@
-# Experiment 15: PHOENIX-2014-T — Enhanced flat encoder
-# Flat 225-d encoder + velocity features (use_motion) + CTC smoothing +
-# contrastive loss (NT-Xent, w=0.1) + R-Drop (w=5.0).
-# Direct upgrade over Exp 2 (same CTC+mBART pipeline, same hyperparams).
-# Ablation: use_motion contributes ~1-2 BLEU, contrastive ~1-2, R-Drop ~1-2 WER.
+# Experiment 33: How2Sign — Multistream CTC on English keywords
+#
+# Replacement diagnostic for Exp 27.  Full English sentence CTC collapsed to
+# high-frequency words ("you/to/the/and") because CTC has no language decoder
+# and the 9.9k-word full-sentence target is too noisy.  This job keeps the
+# CTC-only setting but trains on content-word keyword targets, which are a
+# better weak gloss proxy for How2Sign.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp15-phoenix-enhanced
+  name: train-exp33-how2sign-ms-ctc-keywords
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -21,48 +23,42 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "phoenix"
+          - "how2sign"
           - "--root_dir"
-          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp15_phoenix_enhanced"
+          - "exp33_how2sign_ms_ctc_keywords"
           - "--epochs"
-          - "500"
+          - "300"
           - "--decode"
           - "beam"
           - "--beam_width"
-          - "10"
-          - "--batch_size"
           - "2"
-          - "--grad_accum"
+          - "--batch_size"
           - "8"
-          - "--fp16"
+          - "--grad_accum"
+          - "2"
           - "--dim"
           - "256"
           - "--lr"
-          - "2e-4"
+          - "1e-4"
           - "--dropout"
-          - "0.3"
+          - "0.2"
           - "--num_workers"
           - "4"
-          - "--use_bart"
-          - "--ctc_weight"
-          - "0.5"
-          - "--freeze_bart_epochs"
-          - "20"
+          - "--multistream"
+          - "--unglossed_ctc_target"
+          - "translation_keywords"
+          - "--unglossed_min_freq"
+          - "2"
           - "--ffn_expand"
           - "4"
-          - "--label_smoothing"
-          - "0.1"
-          - "--use_motion"
-          - "--contrastive_weight"
-          - "0.1"
-          - "--rdrop_weight"
-          - "5.0"
           - "--ctc_smoothing"
-          - "0.1"
+          - "0.02"
+          - "--early_stop_patience"
+          - "80"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -80,11 +76,11 @@ spec:
         resources:
           requests:
             cpu: "2"
-            memory: "16Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "2"
-            memory: "16Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

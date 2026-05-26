@@ -345,6 +345,28 @@ class Trainer:
         self.total_steps = len(train_loader) * self.total_epochs
         self.warmup_steps = len(train_loader) * min(5, self.total_epochs)
         self.best_val_loss = float('inf')
+        self._last_good_state = None
+        self._finite_state_interval = 200
+        self._optimizer_steps_since_capture = 0
+
+    def _capture_finite_model_state(self, force=False):
+        """Keep a CPU copy of the latest finite weights for fp16 recovery."""
+        if not force and self._last_good_state is not None:
+            if self._optimizer_steps_since_capture < self._finite_state_interval:
+                return
+        if self._has_non_finite_params(self.model.parameters()):
+            return
+        self._last_good_state = {
+            k: v.detach().cpu().clone()
+            for k, v in self.model.state_dict().items()
+        }
+        self._optimizer_steps_since_capture = 0
+
+    def _restore_last_good_state(self):
+        if self._last_good_state is None:
+            return False
+        self.model.load_state_dict(self._last_good_state)
+        return True
 
     @staticmethod
     def _has_non_finite_grads(parameters) -> bool:
@@ -405,6 +427,8 @@ class Trainer:
         self.model.train()
         self._set_stage(epoch)
         decoder_active = self.use_bart and (self.ctc_weight == 0 or self.stage >= 2)
+        if self._last_good_state is None:
+            self._capture_finite_model_state(force=True)
         
         total_loss        = 0
         total_ctc         = 0
@@ -577,9 +601,13 @@ class Trainer:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     if self._has_non_finite_params(params):
-                        print('  ⚠️ Non-finite parameters detected after optimizer step; stopping epoch early.')
+                        restored = self._restore_last_good_state()
+                        msg = 'restored previous finite checkpoint' if restored else 'no finite checkpoint available'
+                        print(f'  ⚠️ Non-finite parameters detected after optimizer step; {msg}; stopping epoch early.')
                         self.optimizer.zero_grad()
                         break
+                    self._optimizer_steps_since_capture += 1
+                    self._capture_finite_model_state()
                 else:
                     params = list(self.model.parameters())
                     if self._has_non_finite_grads(params):
@@ -589,9 +617,13 @@ class Trainer:
                     torch.nn.utils.clip_grad_norm_(params, 1.0)
                     self.optimizer.step()
                     if self._has_non_finite_params(params):
-                        print('  ⚠️ Non-finite parameters detected after optimizer step; stopping epoch early.')
+                        restored = self._restore_last_good_state()
+                        msg = 'restored previous finite checkpoint' if restored else 'no finite checkpoint available'
+                        print(f'  ⚠️ Non-finite parameters detected after optimizer step; {msg}; stopping epoch early.')
                         self.optimizer.zero_grad()
                         break
+                    self._optimizer_steps_since_capture += 1
+                    self._capture_finite_model_state()
                 self.optimizer.zero_grad()
 
             if batch_idx % 50 == 0:
@@ -755,8 +787,9 @@ class Trainer:
                             total_loss += loss.item()
                             num_batches += 1
 
-                # CTC decode
-                if decode_mode == 'beam':
+                if not torch.isfinite(logits).all():
+                    preds = [[] for _ in range(logits.size(0))]
+                elif decode_mode == 'beam':
                     preds = ctc_beam_decode(logits.cpu(), input_lengths, beam_width)
                 else:
                     preds = ctc_greedy_decode(logits.cpu(), input_lengths)

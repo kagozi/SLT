@@ -163,7 +163,9 @@ class SignLanguageEvaluator:
             if self.use_ctc:
                 logits_cpu = logits.cpu()
                 input_lengths = mask_out.sum(dim=1).long().cpu()
-                if self.decode_mode == 'beam':
+                if not torch.isfinite(logits).all():
+                    preds = [[] for _ in range(logits.size(0))]
+                elif self.decode_mode == 'beam':
                     preds = ctc_beam_decode(logits_cpu, input_lengths, self.beam_width)
                 else:
                     preds = ctc_greedy_decode(logits_cpu, input_lengths)
