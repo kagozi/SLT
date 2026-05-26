@@ -326,7 +326,7 @@ def save_experiment(args, exp_name, results_dir, models_dir,
     # ── Final Model ──
     model_path = models_dir / f"final_{exp_name}.pt"
     torch.save({
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': getattr(model, 'module', model).state_dict(),
         'tokenizer_vocab': tokenizer.gloss_to_idx,
         'config': {
             'dataset': args.dataset,
@@ -873,11 +873,16 @@ def main():
     print(f"🤖 Model: {total_params:,} total | {trainable:,} trainable | {frozen:,} frozen")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"💻 Device: {device}")
+    n_gpus = torch.cuda.device_count() if device == 'cuda' else 0
+    print(f"💻 Device: {device} ({n_gpus} GPU(s))")
+    model = model.to(device)
+    if n_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"   Using DataParallel across {n_gpus} GPUs")
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
+        getattr(model, 'module', model).load_state_dict(ckpt['model_state_dict'])
         print(f"  Resumed from {args.resume}")
     
     # ─── Train ───
@@ -910,7 +915,7 @@ def main():
     best_ckpt = models_dir / 'best_model.pt'
     if best_ckpt.exists():
         ckpt = torch.load(best_ckpt, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
+        getattr(model, 'module', model).load_state_dict(ckpt['model_state_dict'])
         print(f"\n  📥 Loaded best checkpoint (epoch {ckpt.get('epoch','?')}, "
               f"val_loss={ckpt.get('val_loss',float('nan')):.4f})")
 

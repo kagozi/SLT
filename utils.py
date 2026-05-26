@@ -358,14 +358,14 @@ class Trainer:
             return
         self._last_good_state = {
             k: v.detach().cpu().clone()
-            for k, v in self.model.state_dict().items()
+            for k, v in getattr(self.model, 'module', self.model).state_dict().items()
         }
         self._optimizer_steps_since_capture = 0
 
     def _restore_last_good_state(self):
         if self._last_good_state is None:
             return False
-        self.model.load_state_dict(self._last_good_state)
+        getattr(self.model, 'module', self.model).load_state_dict(self._last_good_state)
         return True
 
     @staticmethod
@@ -968,7 +968,7 @@ class Trainer:
                 best_path = self.models_dir / 'best_model.pt'
                 torch.save({
                     'epoch':                epoch,
-                    'model_state_dict':     self.model.state_dict(),
+                    'model_state_dict':     getattr(self.model, 'module', self.model).state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'val_loss':             val_loss,
                     'val_wer':              val_wer,
