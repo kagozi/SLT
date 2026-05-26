@@ -1182,6 +1182,19 @@ class BPETokenizer:
             return ''
         return self._tok.decode(bpe_ids)
 
+    def save(self, path):
+        """Save the BPE tokenizer to a JSON file (HuggingFace tokenizers format)."""
+        self._tok.save(str(path))
+
+    @classmethod
+    def load(cls, path):
+        from tokenizers import Tokenizer
+        obj = cls.__new__(cls)
+        obj._tok = Tokenizer.from_file(str(path))
+        obj._vocab_size = obj._tok.get_vocab_size() + 1
+        print(f"BPETokenizer: loaded {obj.vocab_size} tokens from {path}")
+        return obj
+
     @property
     def vocab_size(self):
         return self._tok.get_vocab_size() + 1  # +1 for blank at index 0

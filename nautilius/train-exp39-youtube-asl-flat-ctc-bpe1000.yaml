@@ -1,0 +1,100 @@
+# Experiment 39: YouTube-ASL — Flat CTC English with BPE-1000 tokenizer (pretrain)
+#
+# Glossless CTC-on-text pretraining on 610K YouTube-ASL segments using BPE
+# subword tokenization (vocab=1000) instead of word-level (~30K+ types).
+#
+# BPE-1000 chosen over BPE-500 because YouTube-ASL is open-domain web content
+# with far greater lexical diversity than How2Sign. 1000 subwords gives better
+# coverage while still being ~30x smaller than word-level vocabulary.
+#
+# The trained BPE tokenizer is saved to:
+#   /data/experiments/models/exp39_youtube_asl_flat_ctc_bpe1000/bpe_tokenizer_exp39_youtube_asl_flat_ctc_bpe1000.json
+# and reused by Exp 40 (How2Sign fine-tune) via --bpe_tokenizer_path.
+#
+# Checkpoint saved to: /data/experiments/models/exp39_youtube_asl_flat_ctc_bpe1000/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp39-youtube-asl-flat-ctc-bpe1000
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "youtube_asl"
+          - "--root_dir"
+          - "/data/hf_cache/youtube_asl_holistic_features"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp39_youtube_asl_flat_ctc_bpe1000"
+          - "--epochs"
+          - "100"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "10"
+          - "--batch_size"
+          - "8"
+          - "--grad_accum"
+          - "4"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "1e-3"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--unglossed_ctc_target"
+          - "translation"
+          - "--ctc_tokenizer"
+          - "bpe"
+          - "--bpe_vocab_size"
+          - "1000"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "10"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

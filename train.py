@@ -342,6 +342,12 @@ def save_experiment(args, exp_name, results_dir, models_dir,
         'metrics': metrics,
     }, model_path)
     
+    # ── Save BPE tokenizer if used (needed for fine-tuning transfer) ──
+    if isinstance(tokenizer, BPETokenizer):
+        bpe_path = models_dir / f"bpe_tokenizer_{exp_name}.json"
+        tokenizer.save(bpe_path)
+        print(f"   🔤 {bpe_path}")
+
     # ── Copy best_model.pt ──
     if Path('best_model.pt').exists():
         shutil.copy2('best_model.pt', models_dir / f"best_{exp_name}.pt")
@@ -516,6 +522,10 @@ def main():
                              'bpe=BPE subword (recommended for open-domain datasets like How2Sign).')
     parser.add_argument('--bpe_vocab_size', type=int, default=500,
                         help='BPE vocabulary size when --ctc_tokenizer bpe is used.')
+    parser.add_argument('--bpe_tokenizer_path', type=str, default=None,
+                        help='Path to a saved BPE tokenizer JSON (from a prior run). '
+                             'When set, skips training a new BPE model and reuses the saved one. '
+                             'Required for fine-tuning on a new dataset with the same vocab.')
     parser.add_argument('--phoenix_ctc_target', type=str, default='gloss',
                         choices=['gloss', 'translation'],
                         help='CTC target for PHOENIX dataset: gloss uses ground-truth gloss '
@@ -708,7 +718,9 @@ def main():
             elif 'PSEUDOGLOSS' in df_yt.columns:
                 ctc_texts = df_yt['PSEUDOGLOSS'].dropna().tolist()
         if ctc_texts:
-            if args.ctc_tokenizer == 'bpe':
+            if args.bpe_tokenizer_path:
+                tokenizer = BPETokenizer.load(args.bpe_tokenizer_path)
+            elif args.ctc_tokenizer == 'bpe':
                 tokenizer = BPETokenizer(ctc_texts, vocab_size=args.bpe_vocab_size)
             else:
                 tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
@@ -734,7 +746,9 @@ def main():
             elif 'PSEUDOGLOSS' in df_h2s.columns:
                 ctc_texts = df_h2s['PSEUDOGLOSS'].dropna().tolist()
         if ctc_texts:
-            if args.ctc_tokenizer == 'bpe':
+            if args.bpe_tokenizer_path:
+                tokenizer = BPETokenizer.load(args.bpe_tokenizer_path)
+            elif args.ctc_tokenizer == 'bpe':
                 tokenizer = BPETokenizer(ctc_texts, vocab_size=args.bpe_vocab_size)
             else:
                 tokenizer = GlossTokenizer(ctc_texts, min_freq=args.unglossed_min_freq)
