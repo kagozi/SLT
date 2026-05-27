@@ -1,26 +1,30 @@
-# Experiment 40: How2Sign — Flat CTC English BPE-1000, fine-tuned from YouTube-ASL (Exp 39)
+# Experiment 42: PHOENIX-2014-T — Flat CTC German with BPE-500 tokenizer
 #
-# Fine-tunes the Exp 39 YouTube-ASL checkpoint on How2Sign using the SAME
-# BPE-1000 tokenizer trained on YouTube-ASL. This is critical: reusing the
-# YouTube-ASL tokenizer (via --bpe_tokenizer_path) ensures the output layer
-# has the same meaning across pretraining and fine-tuning.
+# Replicates Exp 23 (Phoenix flat CTC, word-level) but replaces the 3002-token
+# word-level German vocabulary with a BPE-500 subword tokenizer.
 #
-# Pretraining source: Exp 39 (YouTube-ASL flat CTC BPE-1000)
-# Tokenizer source:   /data/experiments/models/exp39_youtube_asl_flat_ctc_bpe1000/
-#                     bpe_tokenizer_exp39_youtube_asl_flat_ctc_bpe1000.json
+# Motivation (mirroring the How2Sign BPE finding from Exp 38/41):
+#   - Exp 23 scored BLEU-4 ≈ 12.8 at word level (3002 tokens). BPE-500 reduces
+#     the search space ~6x, making CTC alignment easier.
+#   - German morphology is BPE's natural territory: compound words and rich
+#     inflection (Niederschlag, Temperaturen, Schneefälle) decompose cleanly into
+#     subword units, removing hundreds of low-frequency word types from the vocab.
+#   - Expected gain is more modest than How2Sign (which went from BLEU-4 ≈ 0.07
+#     to ≈ 0.40) because Phoenix is already a closed weather domain with limited
+#     OOV. Still worth validating.
 #
-# Tuned vs Exp 39:
-#   - lr: 3e-4  (lower for fine-tuning)
-#   - dropout: 0.2
-#   - early_stop_patience: 30  (fine-tune converges faster than cold-start)
-#   - beam_width: 4            (Exp 38/41 beam sweep shows BLEU-4 peaks at beam=4)
-#   - length_penalty: 1.5      (Exp 38 over-generates; penalty >1 shortens outputs)
+# Improvements over Exp 23 (same decoding fixes as Exp 41):
+#   - ctc_tokenizer bpe, bpe_vocab_size 500
+#   - beam_width 4   (empirically best from Exp 38/41 beam sweep)
+#   - length_penalty 1.5  (corrects the over-generation bias seen in Exp 38)
+#   - early_stop_patience 30  (Exp 23 best model was at epoch ~50; 50-epoch
+#     patience just added wallclock time)
 #
-# Checkpoint saved to: /data/experiments/models/exp40_how2sign_flat_ctc_bpe1000_from_yt/
+# Checkpoint saved to: /data/experiments/models/exp42_phoenix_flat_ctc_bpe500/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp40-how2sign-flat-ctc-bpe1000-from-yt
+  name: train-exp42-phoenix-flat-ctc-bpe500
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -35,13 +39,13 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "how2sign"
+          - "phoenix"
           - "--root_dir"
-          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp40_how2sign_flat_ctc_bpe1000_from_yt"
+          - "exp42_phoenix_flat_ctc_bpe500"
           - "--epochs"
           - "500"
           - "--decode"
@@ -58,23 +62,21 @@ spec:
           - "--dim"
           - "256"
           - "--lr"
-          - "3e-4"
+          - "1e-3"
           - "--dropout"
-          - "0.2"
+          - "0.3"
           - "--num_workers"
           - "4"
-          - "--unglossed_ctc_target"
+          - "--phoenix_ctc_target"
           - "translation"
-          - "--bpe_tokenizer_path"
-          - "/data/experiments/models/exp39_youtube_asl_flat_ctc_bpe1000/bpe_tokenizer_exp39_youtube_asl_flat_ctc_bpe1000.json"
-          - "--pretrained_path"
-          - "/data/experiments/models/exp39_youtube_asl_flat_ctc_bpe1000/best_model.pt"
-          - "--freeze_strategy"
-          - "none"
+          - "--ctc_tokenizer"
+          - "bpe"
+          - "--bpe_vocab_size"
+          - "500"
           - "--ffn_expand"
           - "4"
           - "--ctc_smoothing"
-          - "0.05"
+          - "0.1"
           - "--early_stop_patience"
           - "30"
         env:

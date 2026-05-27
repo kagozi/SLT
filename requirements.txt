@@ -9,3 +9,5 @@ transformers
 huggingface_hub
 rarfile
 sacrebleu
+rouge_score
+nltk

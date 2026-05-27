@@ -1,15 +1,29 @@
-# Experiment 10: How2Sign — Scratch keyword-CTC baseline
-# No pretrained weights. Uses the corrected English keyword CTC target for
-# How2Sign, with a reduced weak-target vocabulary to avoid blank collapse.
+# Experiment 41: How2Sign — Flat CTC BPE-500, v2 (improved decoding)
+#
+# Redo of Exp 38 with three targeted fixes from post-hoc analysis:
+#
+#   1. beam_width 4 instead of 10 — beam sweep on Exp 38 showed BLEU-4 peaks at
+#      beam=4 (0.4046 test); larger beams gave no gain and worsened WER.
+#
+#   2. length_penalty 1.5 — Exp 38 predictions were systematically too long
+#      (WER>100% at all beam widths), caused by beam search favouring long outputs.
+#      Raising the length-normalization exponent from 1.0 → 1.5 penalises longer
+#      sequences more during pruning and final selection.
+#
+#   3. early_stop_patience 30 — Exp 38 best model was at epoch 19; 50-epoch
+#      patience just extended wallclock time without benefit.
+#
+# All other hyperparameters are identical to Exp 38.
+# Checkpoint saved to: /data/experiments/models/exp41_how2sign_flat_ctc_bpe500_v2/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp10-transfer-scratch
+  name: train-exp41-how2sign-flat-ctc-bpe500-v2
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 432000
+  activeDeadlineSeconds: 864000
   template:
     spec:
       restartPolicy: Never
@@ -25,37 +39,40 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp10_transfer_scratch"
+          - "exp41_how2sign_flat_ctc_bpe500_v2"
           - "--epochs"
-          - "100"
+          - "500"
           - "--decode"
           - "beam"
           - "--beam_width"
           - "4"
+          - "--length_penalty"
+          - "1.5"
           - "--batch_size"
-          - "32"
+          - "8"
           - "--grad_accum"
           - "2"
           - "--fp16"
           - "--dim"
           - "256"
-          - "--max_frames"
-          - "300"
-          - "--num_workers"
-          - "2"
-          - "--multistream"
+          - "--lr"
+          - "1e-3"
           - "--dropout"
           - "0.3"
-          - "--lr"
-          - "5e-5"
-          - "--ctc_smoothing"
-          - "0.0"
-          - "--early_stop_patience"
-          - "12"
-          - "--unglossed_min_freq"
-          - "5"
+          - "--num_workers"
+          - "4"
           - "--unglossed_ctc_target"
-          - "translation_keywords"
+          - "translation"
+          - "--ctc_tokenizer"
+          - "bpe"
+          - "--bpe_vocab_size"
+          - "500"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "30"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -73,11 +90,11 @@ spec:
         resources:
           requests:
             cpu: "2"
-            memory: "9Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "2"
-            memory: "10Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

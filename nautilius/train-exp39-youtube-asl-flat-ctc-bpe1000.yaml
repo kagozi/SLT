@@ -32,7 +32,7 @@ spec:
           - "--dataset"
           - "youtube_asl"
           - "--root_dir"
-          - "/data/hf_cache/youtube_asl_holistic_features"
+          - "/data/youtube_asl"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
@@ -84,12 +84,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "4"
-            memory: "16Gi"
+            cpu: "2"
+            memory: "6Gi"
             nvidia.com/gpu: "2"
           limits:
-            cpu: "4"
-            memory: "16Gi"
+            cpu: "2"
+            memory: "6Gi"
             nvidia.com/gpu: "2"
         volumeMounts:
         - name: slt-data

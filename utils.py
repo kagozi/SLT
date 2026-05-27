@@ -165,10 +165,13 @@ def ctc_greedy_decode(logits, input_lengths=None):
     return predictions
 
 
-def ctc_beam_decode(logits, input_lengths=None, beam_width=10):
+def ctc_beam_decode(logits, input_lengths=None, beam_width=10, length_penalty=1.0):
     """
     Prefix beam search CTC decoding with length normalization.
     logits: (B, T, V) — raw logits (will be log_softmax'd)
+    length_penalty: exponent applied to prefix length when normalizing scores.
+        1.0 = standard linear normalization; >1.0 penalizes longer sequences more
+        (reduces WER when model over-generates); <1.0 favours longer outputs.
     Returns: list of decoded token id lists
     """
     if beam_width <= 1:
@@ -231,7 +234,7 @@ def ctc_beam_decode(logits, input_lengths=None, beam_width=10):
 
             ranked = sorted(
                 next_beams.items(),
-                key=lambda kv: _logsumexp_pair(kv[1][0], kv[1][1]) / max(1, len(kv[0])),
+                key=lambda kv: _logsumexp_pair(kv[1][0], kv[1][1]) / max(1, len(kv[0])) ** length_penalty,
                 reverse=True,
             )
             beams = dict(ranked[:beam_width])
@@ -239,7 +242,7 @@ def ctc_beam_decode(logits, input_lengths=None, beam_width=10):
         if beams:
             best_prefix = max(
                 beams.items(),
-                key=lambda kv: _logsumexp_pair(kv[1][0], kv[1][1]) / max(1, len(kv[0])),
+                key=lambda kv: _logsumexp_pair(kv[1][0], kv[1][1]) / max(1, len(kv[0])) ** length_penalty,
             )[0]
             decoded.append(list(best_prefix))
         else:
@@ -266,9 +269,10 @@ class Trainer:
                  bart_tokenizer=None, use_bart=False, ctc_weight=0.3,
                  freeze_bart_epochs=5, models_dir=None, grad_accum=1, fp16=False,
                  contrastive_weight=0.0, rdrop_weight=0.0, ctc_smoothing=0.1,
-                 total_epochs=100, base_lr=1e-3, bart_lr=5e-5,
+                 total_epochs=100, base_lr=1e-3, bart_lr=5e-5, length_penalty=1.0,
                  warmup_bart_epochs=None, joint_encoder_lr_scale=0.2,
-                 joint_bart_lr_scale=0.5, early_stop_patience=0):
+                 joint_bart_lr_scale=0.5, early_stop_patience=0,
+                 freeze_encoder_epochs=0, unfreeze_encoder_lr_scale=0.1):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -298,6 +302,12 @@ class Trainer:
         self.epochs_without_improve = 0
         self.best_score = None
         self.best_summary = None
+        self.length_penalty            = float(length_penalty)
+        self.freeze_encoder_epochs     = max(0, int(freeze_encoder_epochs))
+        self.unfreeze_encoder_lr_scale = float(unfreeze_encoder_lr_scale)
+        self._encoder_unfrozen         = True   # False while encoder is frozen
+        self._deferred_enc_params      = None   # encoder params held aside when frozen
+        self._group_base_lrs           = []     # base LR per optimizer param group
 
         # Optional contrastive projection head — registered on the model so it
         # is saved/loaded with the checkpoint automatically.
@@ -317,6 +327,7 @@ class Trainer:
             'train_contrastive':[], 'train_rdrop':        [],
             'val_loss':         [], 'val_wer':            [],
             'val_bleu1':        [], 'val_bleu4':          [],
+            'val_rougeL':       [], 'val_meteor':         [],
             'val_trans_bleu1':  [], 'val_trans_bleu4':    [],
             'val_empty_pred_ratio': [], 'val_trans_repeat_ratio': [],
             'lr':               [],
@@ -325,21 +336,35 @@ class Trainer:
         self.criterion = CTCLoss(blank=0, smoothing=ctc_smoothing)
 
         # Separate param groups so we can use different LRs
-        encoder_params = []
-        bart_params = []
-        for name, p in model.named_parameters():
-            if 'translation_head' in name:
-                bart_params.append(p)
-            else:
-                encoder_params.append(p)
-
         param_groups = []
-        encoder_trainable = [p for p in encoder_params if p.requires_grad]
-        bart_trainable = [p for p in bart_params if p.requires_grad]
-        if encoder_trainable:
-            param_groups.append({'params': encoder_trainable, 'lr': base_lr, 'weight_decay': 1e-4})
-        if bart_trainable:
-            param_groups.append({'params': bart_trainable, 'lr': bart_lr, 'weight_decay': 0.01})
+        if self.freeze_encoder_epochs > 0 and not use_bart:
+            # Freeze-then-unfreeze: warm up CTC head only, add encoder later
+            raw_model = getattr(model, 'module', model)
+            all_named = list(raw_model.named_parameters())
+            head_params = [p for name, p in all_named if name.startswith('head.') and p.requires_grad]
+            enc_params  = [p for name, p in all_named if not name.startswith('head.') and p.requires_grad]
+            raw_model.freeze_encoder()
+            self._deferred_enc_params = enc_params
+            self._encoder_unfrozen    = False
+            param_groups.append({'params': head_params, 'lr': base_lr, 'weight_decay': 1e-4})
+            self._group_base_lrs.append(base_lr)
+            print(f"  🔒 Encoder frozen for {self.freeze_encoder_epochs} epochs "
+                  f"(head-only CTC warmup; {len(head_params)} head params)")
+        else:
+            encoder_params, bart_params = [], []
+            for name, p in model.named_parameters():
+                if 'translation_head' in name:
+                    bart_params.append(p)
+                else:
+                    encoder_params.append(p)
+            encoder_trainable = [p for p in encoder_params if p.requires_grad]
+            bart_trainable    = [p for p in bart_params if p.requires_grad]
+            if encoder_trainable:
+                param_groups.append({'params': encoder_trainable, 'lr': base_lr, 'weight_decay': 1e-4})
+                self._group_base_lrs.append(base_lr)
+            if bart_trainable:
+                param_groups.append({'params': bart_trainable, 'lr': bart_lr, 'weight_decay': 0.01})
+                self._group_base_lrs.append(bart_lr)
         self.optimizer = torch.optim.AdamW(param_groups)
 
         self.total_steps = len(train_loader) * self.total_epochs
@@ -654,12 +679,30 @@ class Trainer:
         else:
             progress = (step - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             factor = 0.5 * (1 + math.cos(math.pi * progress))
-        if self.optimizer.param_groups:
-            enc_scale = self.joint_encoder_lr_scale if (self.use_bart and self.stage == 3) else 1.0
-            self.optimizer.param_groups[0]['lr'] = self.base_lr * factor * enc_scale
-        if len(self.optimizer.param_groups) > 1:
-            bart_scale = self.joint_bart_lr_scale if (self.use_bart and self.stage == 3) else 1.0
-            self.optimizer.param_groups[1]['lr'] = self.bart_lr * factor * bart_scale
+        in_joint_stage = self.use_bart and self.stage == 3
+        for i, group in enumerate(self.optimizer.param_groups):
+            base = self._group_base_lrs[i] if i < len(self._group_base_lrs) else self.base_lr
+            if in_joint_stage:
+                scale = self.joint_encoder_lr_scale if i == 0 else self.joint_bart_lr_scale
+            else:
+                scale = 1.0
+            group['lr'] = base * factor * scale
+
+    def _unfreeze_encoder(self):
+        """Add encoder params as a new low-LR optimizer group (freeze-then-unfreeze)."""
+        raw_model = getattr(self.model, 'module', self.model)
+        raw_model.unfreeze_encoder()
+        enc_lr = self.base_lr * self.unfreeze_encoder_lr_scale
+        self.optimizer.add_param_group({
+            'params': self._deferred_enc_params,
+            'lr': enc_lr,
+            'weight_decay': 1e-4,
+        })
+        self._group_base_lrs.append(enc_lr)
+        self._encoder_unfrozen = True
+        print(f"\n  🔓 Encoder unfrozen (LR={enc_lr:.2e}, scale={self.unfreeze_encoder_lr_scale})")
+        if wandb.run is not None:
+            wandb.log({'train/encoder_unfrozen': 1, 'train/encoder_lr': enc_lr})
 
     @staticmethod
     def _compute_wer_texts(preds: list, targets: list) -> float:
@@ -706,6 +749,39 @@ class Trainer:
         }
 
     @staticmethod
+    def _compute_rouge_texts(preds: list, targets: list) -> dict:
+        """Corpus-average ROUGE-1 / ROUGE-2 / ROUGE-L (F1, ×100). Returns {} on failure."""
+        try:
+            from rouge_score import rouge_scorer
+            scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+            r1, r2, rl = [], [], []
+            for p, t in zip(preds, targets):
+                s = scorer.score(t, p)
+                r1.append(s['rouge1'].fmeasure)
+                r2.append(s['rouge2'].fmeasure)
+                rl.append(s['rougeL'].fmeasure)
+            return {
+                'ROUGE-1': float(np.mean(r1)) * 100,
+                'ROUGE-2': float(np.mean(r2)) * 100,
+                'ROUGE-L': float(np.mean(rl)) * 100,
+            }
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _compute_meteor_texts(preds: list, targets: list) -> float:
+        """Corpus-average METEOR (×100). Returns 0.0 on failure."""
+        try:
+            import nltk
+            nltk.download('punkt_tab', quiet=True)
+            nltk.download('wordnet', quiet=True)
+            from nltk.translate.meteor_score import meteor_score as _ms
+            scores = [_ms([ref.split()], hyp.split()) for hyp, ref in zip(preds, targets)]
+            return float(np.mean(scores)) * 100
+        except Exception:
+            return 0.0
+
+    @staticmethod
     def _empty_prediction_ratio(pred_texts: list) -> float:
         if not pred_texts:
             return 1.0
@@ -742,7 +818,7 @@ class Trainer:
         return (gloss_bleu4, gloss_bleu1, -empty_ratio, -gloss_wer, -safe_loss)
 
     @torch.no_grad()
-    def validate(self, decode_mode='greedy', beam_width=5):
+    def validate(self, decode_mode='greedy', beam_width=5, length_penalty=None):
         self.model.eval()
         total_loss = 0
         num_batches = 0
@@ -787,10 +863,11 @@ class Trainer:
                             total_loss += loss.item()
                             num_batches += 1
 
+                lp = length_penalty if length_penalty is not None else self.length_penalty
                 if not torch.isfinite(logits).all():
                     preds = [[] for _ in range(logits.size(0))]
                 elif decode_mode == 'beam':
-                    preds = ctc_beam_decode(logits.cpu(), input_lengths, beam_width)
+                    preds = ctc_beam_decode(logits.cpu(), input_lengths, beam_width, length_penalty=lp)
                 else:
                     preds = ctc_greedy_decode(logits.cpu(), input_lengths)
                 all_predictions.extend(preds)
@@ -849,8 +926,13 @@ class Trainer:
 
         for epoch in range(num_epochs):
 
+            # Freeze-then-unfreeze: add encoder to optimizer at the configured epoch
+            if not self._encoder_unfrozen and epoch >= self.freeze_encoder_epochs:
+                self._unfreeze_encoder()
+
             metrics = self.train_epoch(epoch)
-            val_out = self.validate(decode_mode=decode_mode, beam_width=beam_width)
+            val_out = self.validate(decode_mode=decode_mode, beam_width=beam_width,
+                                    length_penalty=self.length_penalty)
             val_loss = val_out['loss']
             predictions = val_out['gloss_predictions']
             targets = val_out['gloss_targets']
@@ -864,6 +946,8 @@ class Trainer:
             ]
             val_wer = self._compute_wer_texts(pred_texts, targets) if pred_texts else 1.0
             val_bleu = self._compute_bleu_texts(pred_texts, targets) if pred_texts else {}
+            val_rouge = self._compute_rouge_texts(pred_texts, targets) if pred_texts else {}
+            val_meteor = self._compute_meteor_texts(pred_texts, targets) if pred_texts else 0.0
             trans_bleu = (
                 self._compute_bleu_texts(trans_predictions, trans_targets)
                 if trans_predictions and trans_targets else {}
@@ -893,6 +977,8 @@ class Trainer:
             self.history['val_wer'].append(val_wer)
             self.history['val_bleu1'].append(val_bleu.get('BLEU-1', 0))
             self.history['val_bleu4'].append(val_bleu.get('BLEU-4', 0))
+            self.history['val_rougeL'].append(val_rouge.get('ROUGE-L', 0))
+            self.history['val_meteor'].append(val_meteor)
             self.history['val_trans_bleu1'].append(trans_bleu.get('BLEU-1', 0))
             self.history['val_trans_bleu4'].append(trans_bleu.get('BLEU-4', 0))
             self.history['val_empty_pred_ratio'].append(empty_pred_ratio)
@@ -926,6 +1012,8 @@ class Trainer:
                 'val/bleu1':                val_bleu.get('BLEU-1', 0),
                 'val/bleu2':                val_bleu.get('BLEU-2', 0),
                 'val/bleu4':                val_bleu.get('BLEU-4', 0),
+                'val/rougeL':               val_rouge.get('ROUGE-L', 0),
+                'val/meteor':               val_meteor,
                 'val/trans_bleu1':          trans_bleu.get('BLEU-1', 0),
                 'val/trans_bleu2':          trans_bleu.get('BLEU-2', 0),
                 'val/trans_bleu4':          trans_bleu.get('BLEU-4', 0),
@@ -961,6 +1049,8 @@ class Trainer:
                     'val_loss': val_loss,
                     'val_wer': val_wer,
                     'val_bleu4': val_bleu.get('BLEU-4', 0),
+                    'val_rougeL': val_rouge.get('ROUGE-L', 0),
+                    'val_meteor': val_meteor,
                     'val_trans_bleu4': trans_bleu.get('BLEU-4', 0),
                     'empty_pred_ratio': empty_pred_ratio,
                     'trans_repeat_ratio': trans_repeat_ratio,
@@ -981,9 +1071,11 @@ class Trainer:
                       f'TransBLEU-4={trans_bleu.get("BLEU-4",0):.4f}) → {best_path}')
                 if wandb.run is not None:
                     wandb.log({
-                        'val/best_loss':  val_loss,
-                        'val/best_wer':   val_wer,
-                        'val/best_bleu4': val_bleu.get('BLEU-4', 0),
+                        'val/best_loss':    val_loss,
+                        'val/best_wer':     val_wer,
+                        'val/best_bleu4':   val_bleu.get('BLEU-4', 0),
+                        'val/best_rougeL':  val_rouge.get('ROUGE-L', 0),
+                        'val/best_meteor':  val_meteor,
                         'val/best_trans_bleu4': trans_bleu.get('BLEU-4', 0),
                     }, step=epoch)
             else:
@@ -1145,12 +1237,17 @@ class BPETokenizer:
         from tokenizers import Tokenizer
         from tokenizers.models import BPE
         from tokenizers.trainers import BpeTrainer
-        from tokenizers.pre_tokenizers import Whitespace
+        from tokenizers.pre_tokenizers import ByteLevel
+        from tokenizers.decoders import ByteLevel as ByteLevelDecoder
         from tokenizers.normalizers import Lowercase, Sequence as NormSequence
 
         self._tok = Tokenizer(BPE(unk_token='<unk>'))
         self._tok.normalizer = NormSequence([Lowercase()])
-        self._tok.pre_tokenizer = Whitespace()
+        # ByteLevel encodes the space before each word as Ġ inside the token,
+        # so sub-word pieces within a word are joined without a space on decode.
+        # This fixes the "sw it ch" → "switch" fragmentation from Whitespace BPE.
+        self._tok.pre_tokenizer = ByteLevel(add_prefix_space=False)
+        self._tok.decoder = ByteLevelDecoder(add_prefix_space=False)
         self._vocab_size = vocab_size
 
         if sentences is not None:

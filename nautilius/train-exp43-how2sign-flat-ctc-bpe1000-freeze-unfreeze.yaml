@@ -1,26 +1,32 @@
-# Experiment 40: How2Sign — Flat CTC English BPE-1000, fine-tuned from YouTube-ASL (Exp 39)
+# Experiment 43: How2Sign — Flat CTC BPE-1000, freeze-then-unfreeze fine-tune from YouTube-ASL
 #
-# Fine-tunes the Exp 39 YouTube-ASL checkpoint on How2Sign using the SAME
-# BPE-1000 tokenizer trained on YouTube-ASL. This is critical: reusing the
-# YouTube-ASL tokenizer (via --bpe_tokenizer_path) ensures the output layer
-# has the same meaning across pretraining and fine-tuning.
+# Mirrors Exp 40 (YouTube-ASL → How2Sign fine-tune) but uses discriminative
+# freeze-then-unfreeze training inspired by SSVP-SLT (Loseille et al., 2024):
 #
-# Pretraining source: Exp 39 (YouTube-ASL flat CTC BPE-1000)
-# Tokenizer source:   /data/experiments/models/exp39_youtube_asl_flat_ctc_bpe1000/
-#                     bpe_tokenizer_exp39_youtube_asl_flat_ctc_bpe1000.json
+#   Epochs 0–9 (freeze_encoder_epochs=10):
+#     Encoder frozen. Only the CTC head (2 linear layers) is trained.
+#     This adapts the output distribution to How2Sign without corrupting the
+#     pretrained encoder representations.
 #
-# Tuned vs Exp 39:
-#   - lr: 3e-4  (lower for fine-tuning)
-#   - dropout: 0.2
-#   - early_stop_patience: 30  (fine-tune converges faster than cold-start)
-#   - beam_width: 4            (Exp 38/41 beam sweep shows BLEU-4 peaks at beam=4)
-#   - length_penalty: 1.5      (Exp 38 over-generates; penalty >1 shortens outputs)
+#   Epoch 10+ (encoder unfrozen):
+#     Encoder added to optimizer at LR = 3e-5 (base 3e-4 × scale 0.1).
+#     CTC head continues at 3e-4. Both decay on the same cosine schedule.
+#     Lower encoder LR prevents catastrophic forgetting of YouTube-ASL features.
 #
-# Checkpoint saved to: /data/experiments/models/exp40_how2sign_flat_ctc_bpe1000_from_yt/
+# Motivation: Exp 40 (full fine-tune from epoch 0) may destroy pretrained
+# features too quickly. Freezing for 10 epochs lets the head learn the
+# How2Sign label distribution first, then the encoder is gradually adapted.
+#
+# Differences from Exp 40:
+#   - freeze_encoder_epochs 10
+#   - unfreeze_encoder_lr_scale 0.1
+#   (all other hyperparams identical)
+#
+# Checkpoint saved to: /data/experiments/models/exp43_how2sign_flat_ctc_bpe1000_freeze_unfreeze/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp40-how2sign-flat-ctc-bpe1000-from-yt
+  name: train-exp43-how2sign-flat-ctc-bpe1000-freeze-unfreeze
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -41,7 +47,7 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp40_how2sign_flat_ctc_bpe1000_from_yt"
+          - "exp43_how2sign_flat_ctc_bpe1000_freeze_unfreeze"
           - "--epochs"
           - "500"
           - "--decode"
@@ -77,6 +83,10 @@ spec:
           - "0.05"
           - "--early_stop_patience"
           - "30"
+          - "--freeze_encoder_epochs"
+          - "10"
+          - "--unfreeze_encoder_lr_scale"
+          - "0.1"
         env:
         - name: WANDB_API_KEY
           valueFrom:

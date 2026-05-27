@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir \
       mediapipe==0.10.14 \
       ultralytics \
       einops sentencepiece regex scikit-learn \
-      omegaconf hydra-core tensorboard sacrebleu nltk \
+      omegaconf hydra-core tensorboard sacrebleu nltk rouge_score \
       wandb kaggle rarfile sacrebleu yt-dlp \
       "transformers==4.44.2" \
       spacy && \

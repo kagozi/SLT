@@ -1,12 +1,25 @@
-# Experiment 34: How2Sign — Multistream BART with keyword CTC auxiliary
+# Experiment 44: PHOENIX-2014-T — Multistream CTC German with BPE-500
 #
-# Main replacement for Exp 26/27.  The CTC head learns a compact content-word
-# alignment signal, while BART generates the final English sentence and supplies
-# the translation BLEU metric that matters for glossless SLT.
+# BPE replication of Exp 25 (Phoenix multistream CTC, word-level German).
+# Exp 25 scored BLEU-4 ≈ 13.96 at word level. BPE-500 should improve
+# by compressing German morphology (Temperaturen → Temper/aturen etc.)
+# the same way BPE helped How2Sign in Exp 38→41.
+#
+# Differences from Exp 25:
+#   - ctc_tokenizer bpe, bpe_vocab_size 500
+#   - beam_width 4         (empirically best from Exp 38/41 sweep)
+#   - length_penalty 1.5   (fixes over-generation seen in Exp 38)
+#   - early_stop_patience 30 (reduced from 100; BPE converges faster)
+#
+# Note: Exp 42 is the flat-CTC BPE version of Exp 23. This experiment
+# adds the multistream encoder on top, testing whether stream separation
+# compounds with BPE's vocabulary gain on Phoenix.
+#
+# Checkpoint saved to: /data/experiments/models/exp44_phoenix_multistream_ctc_bpe500/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp34-how2sign-ms-bart-keyword-ctc
+  name: train-exp44-phoenix-multistream-ctc-bpe500
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -21,55 +34,47 @@ spec:
         command: ["python", "train.py"]
         args:
           - "--dataset"
-          - "how2sign"
+          - "phoenix"
           - "--root_dir"
-          - "/data/hf_cache/How2Sign_Holistic/how2sign_holistic_features"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp34_how2sign_ms_bart_keyword_ctc"
+          - "exp44_phoenix_multistream_ctc_bpe500"
           - "--epochs"
-          - "300"
+          - "500"
           - "--decode"
           - "beam"
           - "--beam_width"
-          - "5"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
           - "--batch_size"
-          - "4"
+          - "8"
           - "--grad_accum"
-          - "4"
+          - "2"
+          - "--fp16"
           - "--dim"
           - "256"
           - "--lr"
-          - "1e-4"
+          - "3e-4"
           - "--dropout"
           - "0.2"
           - "--num_workers"
           - "4"
           - "--multistream"
-          - "--use_bart"
-          - "--ctc_weight"
-          - "0.2"
-          - "--freeze_bart_epochs"
-          - "10"
-          - "--warmup_bart_epochs"
-          - "10"
-          - "--unglossed_ctc_target"
-          - "translation_keywords"
-          - "--unglossed_min_freq"
-          - "2"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ctc_tokenizer"
+          - "bpe"
+          - "--bpe_vocab_size"
+          - "500"
           - "--ffn_expand"
           - "4"
           - "--ctc_smoothing"
-          - "0.02"
-          - "--label_smoothing"
-          - "0.1"
-          - "--joint_encoder_lr_scale"
-          - "0.1"
-          - "--joint_bart_lr_scale"
-          - "0.5"
+          - "0.05"
           - "--early_stop_patience"
-          - "60"
+          - "30"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -87,11 +92,11 @@ spec:
         resources:
           requests:
             cpu: "2"
-            memory: "12Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "2"
-            memory: "12Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

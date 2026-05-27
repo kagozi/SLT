@@ -126,7 +126,7 @@ def setup_directories(exp_name, output_dir=None):
 class SignLanguageEvaluator:
     def __init__(self, model, test_loader, tokenizer, device='cuda',
                  bart_tokenizer=None, decode_mode='greedy', beam_width=5,
-                 use_ctc=True, forced_bos_token_id=None):
+                 use_ctc=True, forced_bos_token_id=None, length_penalty=1.0):
         self.model = model.to(device)
         self.test_loader = test_loader
         self.tokenizer = tokenizer
@@ -136,6 +136,7 @@ class SignLanguageEvaluator:
         self.beam_width = beam_width
         self.use_ctc = use_ctc  # False when ctc_weight==0 (glossless mode)
         self.forced_bos_token_id = forced_bos_token_id
+        self.length_penalty = float(length_penalty)
 
     @torch.no_grad()
     def evaluate(self, verbose=True):
@@ -166,7 +167,8 @@ class SignLanguageEvaluator:
                 if not torch.isfinite(logits).all():
                     preds = [[] for _ in range(logits.size(0))]
                 elif self.decode_mode == 'beam':
-                    preds = ctc_beam_decode(logits_cpu, input_lengths, self.beam_width)
+                    preds = ctc_beam_decode(logits_cpu, input_lengths, self.beam_width,
+                                            length_penalty=self.length_penalty)
                 else:
                     preds = ctc_greedy_decode(logits_cpu, input_lengths)
                 for p in preds:
@@ -195,6 +197,10 @@ class SignLanguageEvaluator:
             metrics['trans_BLEU-1'] = trans_bleu.get('BLEU-1', 0)
             metrics['trans_BLEU-4'] = trans_bleu.get('BLEU-4', 0)
             metrics['trans_BLEU'] = trans_bleu.get('BLEU', 0)
+            trans_rouge = self._compute_rouge(all_trans_preds, all_trans_targets)
+            metrics['trans_ROUGE-L'] = trans_rouge.get('ROUGE-L', 0)
+            trans_meteor = self._compute_meteor(all_trans_preds, all_trans_targets)
+            metrics['trans_METEOR'] = trans_meteor.get('METEOR', 0)
 
         return metrics, {
             'preds': all_preds, 'targets': all_targets, 'names': all_names,
@@ -210,6 +216,8 @@ class SignLanguageEvaluator:
             metrics['WER'] = float(self._compute_wer(preds, targets))
             bleu = self._compute_bleu(preds, targets)
             metrics.update(bleu)
+            metrics.update(self._compute_rouge(preds, targets))
+            metrics.update(self._compute_meteor(preds, targets))
             exact = sum(1 for p, t in zip(preds, targets) if p.strip() == t.strip())
             metrics['exact_match'] = exact / len(preds)
         else:
@@ -254,6 +262,39 @@ class SignLanguageEvaluator:
         }
         return scores
 
+    @staticmethod
+    def _compute_rouge(preds, targets):
+        """Corpus-average ROUGE-1 / ROUGE-2 / ROUGE-L (F1, ×100). Returns {} on failure."""
+        try:
+            from rouge_score import rouge_scorer
+            scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+            r1, r2, rl = [], [], []
+            for p, t in zip(preds, targets):
+                s = scorer.score(t, p)
+                r1.append(s['rouge1'].fmeasure)
+                r2.append(s['rouge2'].fmeasure)
+                rl.append(s['rougeL'].fmeasure)
+            return {
+                'ROUGE-1': float(np.mean(r1)) * 100,
+                'ROUGE-2': float(np.mean(r2)) * 100,
+                'ROUGE-L': float(np.mean(rl)) * 100,
+            }
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _compute_meteor(preds, targets):
+        """Corpus-average METEOR (×100). Returns {} on failure."""
+        try:
+            import nltk
+            nltk.download('punkt_tab', quiet=True)
+            nltk.download('wordnet', quiet=True)
+            from nltk.translate.meteor_score import meteor_score as _ms
+            scores = [_ms([ref.split()], hyp.split()) for hyp, ref in zip(preds, targets)]
+            return {'METEOR': float(np.mean(scores)) * 100}
+        except Exception:
+            return {}
+
     def print_metrics(self, metrics):
         print("\n" + "="*60)
         print("📊 EVALUATION RESULTS")
@@ -264,6 +305,12 @@ class SignLanguageEvaluator:
             print(f"  WER:     {metrics['WER']:.2%}")
             print(f"  BLEU-1:  {metrics.get('BLEU-1', 0):.4f}")
             print(f"  BLEU-4:  {metrics.get('BLEU-4', 0):.4f}")
+            if 'ROUGE-L' in metrics:
+                print(f"  ROUGE-1: {metrics.get('ROUGE-1', 0):.4f}")
+                print(f"  ROUGE-2: {metrics.get('ROUGE-2', 0):.4f}")
+                print(f"  ROUGE-L: {metrics.get('ROUGE-L', 0):.4f}")
+            if 'METEOR' in metrics:
+                print(f"  METEOR:  {metrics.get('METEOR', 0):.4f}")
             print(f"  Exact:   {metrics.get('exact_match', 0):.2%}")
         else:
             print(f"  WER/BLEU: N/A (glossless mode — CTC not used)")
@@ -447,7 +494,8 @@ BEAM_WIDTHS = [1, 2, 4, 8, 16, 32]
 
 
 def run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
-                   bart_tokenizer, exp_name, use_ctc=True, forced_bos_token_id=None):
+                   bart_tokenizer, exp_name, use_ctc=True, forced_bos_token_id=None,
+                   length_penalty=1.0):
     """
     Evaluate best model at beam widths 1–32 on val and test splits.
     Logs a W&B Table (beam_sweep) and a per-metric line chart.
@@ -465,6 +513,7 @@ def run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
                 bart_tokenizer=bart_tokenizer,
                 decode_mode='beam', beam_width=bw,
                 use_ctc=use_ctc, forced_bos_token_id=forced_bos_token_id,
+                length_penalty=length_penalty,
             )
             m, _ = ev.evaluate(verbose=False)
             row = dict(
@@ -542,6 +591,9 @@ def main():
     # Decoding
     parser.add_argument('--decode', type=str, default='greedy', choices=['greedy', 'beam'])
     parser.add_argument('--beam_width', type=int, default=10)
+    parser.add_argument('--length_penalty', type=float, default=1.0,
+                        help='Exponent for length normalization in CTC beam search. '
+                             '>1.0 penalizes longer outputs (improves WER when over-generating).')
     
     # BART translation
     parser.add_argument('--use_bart', action='store_true', help='Enable BART Gloss→Text')
@@ -620,6 +672,16 @@ def main():
     parser.add_argument('--early_stop_patience', type=int, default=0,
                         help='Stop training after this many epochs without validation '
                              'score improvement. 0 disables early stopping.')
+    parser.add_argument('--freeze_encoder_epochs', type=int, default=0,
+                        help='Freeze the encoder for this many epochs at the start of '
+                             'training (CTC head warms up alone). After this many epochs '
+                             'the encoder is added to the optimizer at a lower LR '
+                             '(--unfreeze_encoder_lr_scale). 0 disables (default). '
+                             'Only applies to CTC-only mode (no --use_bart).')
+    parser.add_argument('--unfreeze_encoder_lr_scale', type=float, default=0.1,
+                        help='LR multiplier for the encoder when it is unfrozen relative '
+                             'to --lr. Default 0.1 gives 10x lower LR to avoid catastrophic '
+                             'forgetting of pretrained encoder representations.')
 
     args = parser.parse_args()
     
@@ -700,8 +762,12 @@ def main():
                 all_gloss.extend(df['translation'].dropna().map(normalize_german_text).tolist())
             else:
                 all_gloss.extend(df['orth'].dropna().tolist())
-        tokenizer = GlossTokenizer(all_gloss, min_freq=1)
-        print(f"  PHOENIX {args.phoenix_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
+        if args.ctc_tokenizer == 'bpe':
+            tokenizer = BPETokenizer(all_gloss, vocab_size=args.bpe_vocab_size)
+            print(f"  PHOENIX {args.phoenix_ctc_target} BPE tokenizer: {tokenizer.vocab_size} tokens")
+        else:
+            tokenizer = GlossTokenizer(all_gloss, min_freq=1)
+            print(f"  PHOENIX {args.phoenix_ctc_target} CTC tokenizer: {tokenizer.vocab_size} tokens")
     elif args.dataset == 'youtube_asl':
         # YouTube-ASL has no true glosses. Build CTC vocab from the selected
         # weak target, defaulting to legacy PSEUDOGLOSS for compatibility.
@@ -906,6 +972,9 @@ def main():
             joint_encoder_lr_scale=args.joint_encoder_lr_scale,
             joint_bart_lr_scale=args.joint_bart_lr_scale,
             early_stop_patience=args.early_stop_patience,
+            length_penalty=args.length_penalty,
+            freeze_encoder_epochs=args.freeze_encoder_epochs,
+            unfreeze_encoder_lr_scale=args.unfreeze_encoder_lr_scale,
         )
         print(f"\n🏋️ Training for {args.epochs} epochs...")
         trainer.train(num_epochs=args.epochs, decode_mode=args.decode,
@@ -928,6 +997,7 @@ def main():
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
         use_ctc=use_ctc, forced_bos_token_id=args.forced_bos_token_id,
+        length_penalty=args.length_penalty,
     )
     val_metrics, val_data = val_evaluator.evaluate(verbose=False)
     val_evaluator.print_metrics(val_metrics)
@@ -953,6 +1023,7 @@ def main():
         bart_tokenizer=bart_tokenizer,
         decode_mode=args.decode, beam_width=args.beam_width,
         use_ctc=use_ctc, forced_bos_token_id=args.forced_bos_token_id,
+        length_penalty=args.length_penalty,
     )
     test_metrics, test_data = test_evaluator.evaluate(verbose=True)
     test_evaluator.print_metrics(test_metrics)
@@ -991,7 +1062,8 @@ def main():
     # ─── Beam sweep (val + test) ───
     run_beam_sweep(model, val_loader, test_loader, tokenizer, device,
                    bart_tokenizer, exp_name, use_ctc=use_ctc,
-                   forced_bos_token_id=args.forced_bos_token_id)
+                   forced_bos_token_id=args.forced_bos_token_id,
+                   length_penalty=args.length_penalty)
 
     # ─── Save experiment artefacts ───
     save_experiment(args, exp_name, results_dir, models_dir,

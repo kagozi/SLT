@@ -1,19 +1,26 @@
-# Experiment 21: YouTube-ASL → How2Sign Fine-tune (keyword CTC + BART)
+# Experiment 45: How2Sign — Multistream CTC English BPE-500 (Glossless)
 #
-# Fine-tunes the Exp20 YouTube-ASL checkpoint on How2Sign with the full
-# multistream + keyword CTC + mBART pipeline. All layers are trainable.
+# BPE replication of Exp 35 (How2Sign multistream CTC, word-level English).
+# Tests whether the BPE vocabulary gain (established in Exp 38→41 for flat CTC)
+# compounds with the multistream encoder's stream-separation benefit.
 #
-# Target comparison (How2Sign BLEU-4):
-#   Exp 18 (scratch)              — baseline
-#   Exp 9  (PHOENIX → How2Sign)   — cross-lingual transfer
-#   Exp 21 (YouTube-ASL → H2S)   — expected strongest (same language, massive scale)
+# Architecture (same as Exp 35):
+#   --arch interleaved --multistream:
+#     4 body-part streams (pose/lhand/rhand/face), each through 3 ConformerBlocks
+#     (Conv+Transformer, kernels 11/5/11) with per-stream velocity features.
+#     Fused via cross-stream attention, then 4 shared TransformerBlocks.
 #
-# Depends on: Exp 20 checkpoint at
-#   /data/experiments/models/exp20_youtube_asl_pretrain/best_exp20_youtube_asl_pretrain.pt
+# Differences from Exp 35:
+#   - ctc_tokenizer bpe, bpe_vocab_size 500
+#   - beam_width 4         (empirically best from Exp 38/41 sweep)
+#   - length_penalty 1.5   (fixes over-generation)
+#   - early_stop_patience 30  (reduced from 100; BPE converges faster)
+#
+# Checkpoint saved to: /data/experiments/models/exp45_how2sign_multistream_ctc_bpe500/
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: train-exp21-youtube-asl-to-how2sign
+  name: train-exp45-how2sign-multistream-ctc-bpe500
   namespace: gai-lina-group
 spec:
   backoffLimit: 1
@@ -34,52 +41,45 @@ spec:
           - "--output_dir"
           - "/data/experiments"
           - "--exp_name"
-          - "exp21_youtube_asl_to_how2sign"
+          - "exp45_how2sign_multistream_ctc_bpe500"
           - "--epochs"
-          - "120"
+          - "500"
           - "--decode"
           - "beam"
           - "--beam_width"
           - "4"
+          - "--length_penalty"
+          - "1.5"
           - "--batch_size"
-          - "16"
+          - "8"
           - "--grad_accum"
           - "2"
           - "--fp16"
           - "--dim"
-          - "256"
-          - "--max_frames"
-          - "300"
-          - "--num_workers"
-          - "2"
-          - "--multistream"
-          - "--use_bart"
-          - "--ctc_weight"
-          - "0.3"
-          - "--freeze_bart_epochs"
-          - "0"
-          - "--ffn_expand"
-          - "4"
+          - "384"
           - "--lr"
-          - "5e-5"
+          - "2e-4"
           - "--dropout"
-          - "0.3"
-          - "--label_smoothing"
-          - "0.1"
-          - "--contrastive_weight"
-          - "0.05"
-          - "--ctc_smoothing"
-          - "0.0"
-          - "--early_stop_patience"
-          - "12"
-          - "--pretrained_path"
-          - "/data/experiments/models/exp20_youtube_asl_pretrain/best_exp20_youtube_asl_pretrain.pt"
-          - "--freeze_strategy"
-          - "none"
-          - "--unglossed_min_freq"
-          - "5"
+          - "0.2"
+          - "--num_workers"
+          - "4"
+          - "--arch"
+          - "interleaved"
+          - "--multistream"
           - "--unglossed_ctc_target"
-          - "translation_keywords"
+          - "translation"
+          - "--ctc_tokenizer"
+          - "bpe"
+          - "--bpe_vocab_size"
+          - "500"
+          - "--ffn_expand"
+          - "2"
+          - "--max_frames"
+          - "180"
+          - "--ctc_smoothing"
+          - "0.05"
+          - "--early_stop_patience"
+          - "30"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -97,11 +97,11 @@ spec:
         resources:
           requests:
             cpu: "2"
-            memory: "9Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
           limits:
             cpu: "2"
-            memory: "10Gi"
+            memory: "8Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data
