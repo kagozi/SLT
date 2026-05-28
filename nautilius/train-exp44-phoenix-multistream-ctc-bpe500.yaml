@@ -27,6 +27,15 @@ spec:
   activeDeadlineSeconds: 864000
   template:
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
       restartPolicy: Never
       containers:
       - name: trainer
@@ -50,9 +59,9 @@ spec:
           - "--length_penalty"
           - "1.5"
           - "--batch_size"
-          - "8"
+          - "32"
           - "--grad_accum"
-          - "2"
+          - "1"
           - "--fp16"
           - "--dim"
           - "256"
@@ -75,6 +84,7 @@ spec:
           - "0.05"
           - "--early_stop_patience"
           - "30"
+          - "--preload_data"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -91,12 +101,12 @@ spec:
           value: /data/.wandb_cache
         resources:
           requests:
-            cpu: "2"
-            memory: "8Gi"
+            cpu: "1"
+            memory: "4Gi"
             nvidia.com/gpu: "1"
           limits:
-            cpu: "2"
-            memory: "8Gi"
+            cpu: "1"
+            memory: "4Gi"
             nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data

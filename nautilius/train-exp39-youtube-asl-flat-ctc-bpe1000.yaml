@@ -38,15 +38,17 @@ spec:
           - "--exp_name"
           - "exp39_youtube_asl_flat_ctc_bpe1000"
           - "--epochs"
-          - "200"
+          - "100"
           - "--decode"
           - "beam"
           - "--beam_width"
-          - "10"
-          - "--batch_size"
-          - "16"
-          - "--grad_accum"
           - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "64"
+          - "--grad_accum"
+          - "1"
           - "--fp16"
           - "--dim"
           - "256"
@@ -55,7 +57,7 @@ spec:
           - "--dropout"
           - "0.3"
           - "--num_workers"
-          - "4"
+          - "2"
           - "--unglossed_ctc_target"
           - "translation"
           - "--ctc_tokenizer"
@@ -67,7 +69,7 @@ spec:
           - "--ctc_smoothing"
           - "0.1"
           - "--early_stop_patience"
-          - "10"
+          - "20"
         env:
         - name: WANDB_API_KEY
           valueFrom:
@@ -85,12 +87,12 @@ spec:
         resources:
           requests:
             cpu: "2"
-            memory: "6Gi"
-            nvidia.com/gpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
           limits:
             cpu: "2"
-            memory: "6Gi"
-            nvidia.com/gpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
         volumeMounts:
         - name: slt-data
           mountPath: /data

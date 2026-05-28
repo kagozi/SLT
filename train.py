@@ -672,6 +672,11 @@ def main():
     parser.add_argument('--early_stop_patience', type=int, default=0,
                         help='Stop training after this many epochs without validation '
                              'score improvement. 0 disables early stopping.')
+    parser.add_argument('--preload_data', action='store_true',
+                        help='Load all dataset .npy files into RAM before training. '
+                             'Eliminates PVC I/O bottleneck and maximises GPU utilisation. '
+                             'Use for Phoenix (~1GB) and How2Sign (~8GB). '
+                             'Not suitable for YouTube-ASL (>60GB).')
     parser.add_argument('--freeze_encoder_epochs', type=int, default=0,
                         help='Freeze the encoder for this many epochs at the start of '
                              'training (CTC head warms up alone). After this many epochs '
@@ -872,16 +877,32 @@ def main():
     args.input_dim_detected = input_dim
     print(f"  input_dim={input_dim}, vocab={tokenizer.vocab_size}, "
           f"train={len(train_ds)}, val={len(val_ds)}, test={len(test_ds)}")
-    
+
+    # ── Optional RAM preloading ──
+    if args.preload_data:
+        from torch.utils.data import Dataset as _Dataset
+        class _RAMDataset(_Dataset):
+            def __init__(self, src, tag):
+                print(f"  📦 Preloading {tag} ({len(src)} samples) into RAM…", flush=True)
+                self._data = [src[i] for i in range(len(src))]
+                print(f"  ✅ {tag} preloaded.", flush=True)
+            def __len__(self): return len(self._data)
+            def __getitem__(self, i): return self._data[i]
+        train_ds = _RAMDataset(train_ds, 'train')
+        val_ds   = _RAMDataset(val_ds,   'val')
+        test_ds  = _RAMDataset(test_ds,  'test')
+        # Data is in RAM — no worker processes needed
+        args.num_workers = 0
+
     train_loader = DataLoader(train_ds, args.batch_size, shuffle=True,
                                collate_fn=collate_fn, num_workers=args.num_workers,
-                               pin_memory=True)
+                               pin_memory=(not args.preload_data))
     val_loader = DataLoader(val_ds, args.batch_size, shuffle=False,
                              collate_fn=collate_fn, num_workers=args.num_workers,
-                             pin_memory=True)
+                             pin_memory=(not args.preload_data))
     test_loader = DataLoader(test_ds, args.batch_size, shuffle=False,
                               collate_fn=collate_fn, num_workers=args.num_workers,
-                              pin_memory=True)
+                              pin_memory=(not args.preload_data))
     
     # ─── Model ───
     _model_kwargs = dict(
