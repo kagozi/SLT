@@ -74,18 +74,23 @@ def make_collate(tokenizer, max_src_len, max_tgt_len):
         translations = [b[1] for b in batch]
 
         tokenizer.src_lang = SRC_LANG
-        tokenizer.tgt_lang = TGT_LANG
         enc = tokenizer(
             text=glosses,
-            text_target=translations,
             max_length=max_src_len,
-            max_target_length=max_tgt_len,
             padding=True,
             truncation=True,
             return_tensors="pt",
         )
-        labels = enc["labels"].masked_fill(
-            enc["labels"] == tokenizer.pad_token_id, -100
+        tokenizer.tgt_lang = TGT_LANG
+        tgt = tokenizer(
+            text_target=translations,
+            max_length=max_tgt_len,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+        labels = tgt["input_ids"].masked_fill(
+            tgt["input_ids"] == tokenizer.pad_token_id, -100
         )
         enc["labels"] = labels
         return enc
