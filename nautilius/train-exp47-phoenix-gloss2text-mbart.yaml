@@ -1,0 +1,94 @@
+# Experiment 47: PHOENIX-2014-T — Gloss→Text (mBART-50 oracle)
+#
+# Fine-tunes mBART-large-50-many-to-many-mmt on gold PHOENIX gloss sequences
+# → German translation pairs.  Pure text-to-text: no keypoints, no visual encoder.
+#
+# Role in the paper:
+#   This is the oracle upper bound on sign language translation performance.
+#   Given *perfect* gloss recognition, how well can we recover German text?
+#   Compare against our end-to-end CTC results:
+#     Exp 23 (flat CTC, word-level):         BLEU-4 ≈ 12.8
+#     Exp 25 (multistream CTC, word-level):  BLEU-4 ≈ 13.96
+#     Exp 47 (gold-gloss oracle, mBART-50):  expected significantly higher
+#
+# The gap between Exp 47 and Exp 23/25 shows how much room remains for
+# improving the visual encoder / gloss recognition stage.
+#
+# Checkpoint saved to: /data/experiments/models/exp47_phoenix_gloss2text_mbart/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp47-phoenix-gloss2text-mbart
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train_gloss2text.py"]
+        args:
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp47_phoenix_gloss2text_mbart"
+          - "--epochs"
+          - "60"
+          - "--lr"
+          - "5e-5"
+          - "--batch_size"
+          - "4"
+          - "--grad_accum"
+          - "4"
+          - "--beam_width"
+          - "4"
+          - "--fp16"
+          - "--early_stop_patience"
+          - "15"
+          - "--num_workers"
+          - "0"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
