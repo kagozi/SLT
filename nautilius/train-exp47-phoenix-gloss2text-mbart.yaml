@@ -35,6 +35,7 @@ spec:
                 operator: NotIn
                 values:
                 - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
       restartPolicy: Never
       containers:
       - name: trainer
