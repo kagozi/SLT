@@ -37,16 +37,9 @@ spec:
                 - k8s-haosu-07.sdsc.optiputer.net
                 - k8s-chase-ci-03.calit2.optiputer.net
               - key: nvidia.com/gpu.memory
-                operator: In
+                operator: Gt
                 values:
-                - "16160"
-                - "16384"
-                - "24268"
-                - "32768"
-                - "40536"
-                - "40960"
-                - "49152"
-                - "81920"
+                - "15000"
       restartPolicy: Never
       containers:
       - name: trainer
