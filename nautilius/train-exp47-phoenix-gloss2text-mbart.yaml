@@ -36,6 +36,17 @@ spec:
                 values:
                 - k8s-haosu-07.sdsc.optiputer.net
                 - k8s-chase-ci-03.calit2.optiputer.net
+              - key: nvidia.com/gpu.memory
+                operator: In
+                values:
+                - "16160"
+                - "16384"
+                - "24268"
+                - "32768"
+                - "40536"
+                - "40960"
+                - "49152"
+                - "81920"
       restartPolicy: Never
       containers:
       - name: trainer
@@ -53,9 +64,9 @@ spec:
           - "--lr"
           - "5e-5"
           - "--batch_size"
-          - "4"
+          - "2"
           - "--grad_accum"
-          - "4"
+          - "8"
           - "--beam_width"
           - "4"
           - "--fp16"

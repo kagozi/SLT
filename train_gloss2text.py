@@ -172,6 +172,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(BART_MODEL)
     model     = AutoModelForSeq2SeqLM.from_pretrained(BART_MODEL)
     device    = "cuda" if torch.cuda.is_available() else "cpu"
+    model.gradient_checkpointing_enable()
     model     = model.to(device)
     print(f"  Model params: {sum(p.numel() for p in model.parameters()):,}")
 
