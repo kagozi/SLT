@@ -1,0 +1,120 @@
+# Experiment 46: PHOENIX-2014-T — Flat CTC German (Word-level) with ASL Encoder Transfer
+#
+# Transfer learning from Exp 41 (How2Sign flat CTC BPE-500) to Phoenix 2014.
+# The encoder (visual sign representations) is initialised from the exp41
+# checkpoint; the CTC head is reinitialised for the Phoenix word-level German
+# vocabulary (~3002 tokens) since the source and target vocabularies differ.
+#
+# Motivation:
+#   - Exp 23 (Phoenix flat CTC word-level) scored BLEU-4 ≈ 12.8 training from scratch.
+#   - BPE experiments (exp42) did not improve over word-level on Phoenix.
+#   - Hypothesis: ASL pretraining teaches general sign-language visual features
+#     (handshape, movement, location) that transfer cross-lingually to DGS,
+#     giving the encoder a stronger initialisation than random weights.
+#   - Freeze-then-unfreeze (10 epochs head warmup) prevents the pretrained
+#     encoder from being corrupted before the head can provide useful gradients.
+#
+# Architecture: identical to Exp 23 (flat single-stream conformer, dim=256).
+# Tokenizer: word-level German (same as Exp 23) — no BPE.
+#
+# Checkpoint saved to: /data/experiments/models/exp46_phoenix_flat_ctc_asl_transfer/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp46-phoenix-flat-ctc-asl-transfer
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp46_phoenix_flat_ctc_asl_transfer"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "64"
+          - "--grad_accum"
+          - "1"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "3e-4"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--preload_data"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "30"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp38_how2sign_flat_ctc_bpe500/best_model.pt"
+          - "--freeze_encoder_epochs"
+          - "10"
+          - "--unfreeze_encoder_lr_scale"
+          - "1.0"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "1"
+            memory: "4Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "1"
+            memory: "4Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
