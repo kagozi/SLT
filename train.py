@@ -627,6 +627,10 @@ def main():
     # Transfer learning
     parser.add_argument('--pretrained_path', type=str, default=None,
                         help='Path to pretrained checkpoint (.pt) to initialise encoder from')
+    parser.add_argument('--pretrain_num_layers', type=int, default=0,
+                        help='If >0, transfer only the first N conv_blocks from the pretrained '
+                             'checkpoint; upper conv_blocks and all transformer_blocks are '
+                             'randomly reinitialised. 0 = transfer all encoder layers.')
     parser.add_argument('--freeze_strategy', type=str, default='none',
                         choices=['none', 'convblocks', 'full'],
                         help='Encoder freeze strategy for transfer learning: '
@@ -933,12 +937,23 @@ def main():
             ckpt = torch.load(ckpt_path, map_location='cpu')
             src = ckpt.get('model_state_dict', ckpt)
             # Load only shared encoder weights; ignore head (vocab mismatch across datasets)
-            encoder_keys = {k: v for k, v in src.items()
-                            if not k.startswith('head.')
-                            and not k.startswith('translation_head.')
-                            and k != 'pos_encoding.pe'}  # pe is a fixed sinusoidal buffer; drop to allow max_frames mismatch
+            encoder_keys = {}
+            for k, v in src.items():
+                if k.startswith('head.') or k.startswith('translation_head.'):
+                    continue
+                if k == 'pos_encoding.pe':  # fixed sinusoidal buffer; drop to allow max_frames mismatch
+                    continue
+                if args.pretrain_num_layers > 0:
+                    if k.startswith('conv_blocks.'):
+                        layer_idx = int(k.split('.')[1])
+                        if layer_idx >= args.pretrain_num_layers:
+                            continue  # skip upper conv blocks
+                    if k.startswith('transformer_blocks.'):
+                        continue  # skip all transformer blocks in partial-transfer mode
+                encoder_keys[k] = v
             missing, unexpected = model.load_state_dict(encoder_keys, strict=False)
-            print(f"  📥 Pretrained encoder loaded from {ckpt_path.name}")
+            n_layers = args.pretrain_num_layers or 'all'
+            print(f"  📥 Pretrained encoder loaded from {ckpt_path.name} (layers={n_layers})")
             print(f"     Loaded {len(encoder_keys)} keys | "
                   f"missing={len(missing)} | unexpected={len(unexpected)}")
         else:

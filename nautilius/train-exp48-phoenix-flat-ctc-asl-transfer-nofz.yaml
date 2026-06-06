@@ -1,0 +1,108 @@
+# Experiment 48: PHOENIX-2014-T — ASL Transfer, No Freeze, Full LR
+#
+# Ablation of Exp 46: removes freeze-then-unfreeze and restores full LR (1e-3).
+# Treats the exp38 ASL checkpoint purely as a weight initialisation — no staged
+# warmup. The German CTC head and encoder train jointly from epoch 0.
+#
+# Motivation: exp46's 10-epoch freeze with a randomly initialised German head
+# may have poisoned the encoder before it could receive useful gradients.
+# Training jointly at full LR lets the encoder and head co-adapt immediately.
+#
+# Checkpoint saved to: /data/experiments/models/exp48_phoenix_flat_ctc_asl_transfer_nofz/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp48-phoenix-flat-ctc-asl-transfer-nofz
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp48_phoenix_flat_ctc_asl_transfer_nofz"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "64"
+          - "--grad_accum"
+          - "1"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "1e-3"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--preload_data"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "30"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp38_how2sign_flat_ctc_bpe500/best_model.pt"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "1"
+            memory: "4Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "1"
+            memory: "4Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
