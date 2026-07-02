@@ -627,6 +627,10 @@ def main():
     # Transfer learning
     parser.add_argument('--pretrained_path', type=str, default=None,
                         help='Path to pretrained checkpoint (.pt) to initialise encoder from')
+    parser.add_argument('--pretrained_bart_path', type=str, default=None,
+                        help='Path to a train_gloss2text.py checkpoint to warm-start the '
+                             'mBART translation head. Only applies when --use_bart is set. '
+                             'The checkpoint must contain model_state_dict with mBART weights.')
     parser.add_argument('--pretrain_num_layers', type=int, default=0,
                         help='If >0, transfer only the first N conv_blocks from the pretrained '
                              'checkpoint; upper conv_blocks and all transformer_blocks are '
@@ -958,6 +962,21 @@ def main():
                   f"missing={len(missing)} | unexpected={len(unexpected)}")
         else:
             print(f"  ⚠️  Pretrained path not found: {args.pretrained_path} — training from scratch")
+
+    # ── Load pretrained mBART weights (from train_gloss2text.py checkpoint) ──
+    if args.pretrained_bart_path and args.use_bart and model.translation_head is not None:
+        bart_ckpt_path = Path(args.pretrained_bart_path)
+        if bart_ckpt_path.exists():
+            bart_ckpt = torch.load(bart_ckpt_path, map_location='cpu')
+            bart_src = bart_ckpt.get('model_state_dict', bart_ckpt)
+            # train_gloss2text.py saves the raw AutoModelForSeq2SeqLM state dict
+            missing, unexpected = model.translation_head.bart.load_state_dict(
+                bart_src, strict=False
+            )
+            print(f"  📥 mBART weights loaded from {bart_ckpt_path.name}")
+            print(f"     missing={len(missing)} | unexpected={len(unexpected)}")
+        else:
+            print(f"  ⚠️  pretrained_bart_path not found: {args.pretrained_bart_path} — mBART uses HuggingFace init")
 
     # ── Apply freeze strategy ──
     if args.freeze_strategy == 'full':

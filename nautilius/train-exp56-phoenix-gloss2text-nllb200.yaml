@@ -1,0 +1,103 @@
+# Experiment 56: PHOENIX-2014-T — Gloss2Text with facebook/nllb-200-distilled-600M
+#
+# Tests NLLB-200 as the seq2seq backbone for gloss→German translation.
+# NLLB (No Language Left Behind) is multilingual like mBART-50 but trained on
+# 200 languages with stronger coverage of low-resource pairs.
+#
+# Comparison baseline:
+#   Exp 33 (mBART-50):   val BLEU-4 ~16.33 (best so far)
+#   Exp 55 (BART-large): val BLEU-4 ~14.86
+#
+# Key difference from exp33/55:
+#   - bart_model: facebook/nllb-200-distilled-600M
+#   - German lang code: deu_Latn  (vs de_DE for mBART)
+#   - Architecture: M2M-100 style (encoder-decoder with lang token)
+#   - Model size: ~600M params (vs 610M mBART-50, 400M BART-large)
+#
+# Hyperparameters match exp33 and exp55 to isolate backbone effect.
+#
+# Checkpoint saved to: /data/experiments/models/exp56_phoenix_gloss2text_nllb200/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp56-phoenix-gloss2text-nllb200
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 432000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train_gloss2text.py"]
+        args:
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp56_phoenix_gloss2text_nllb200"
+          - "--bart_model"
+          - "facebook/nllb-200-distilled-600M"
+          - "--epochs"
+          - "60"
+          - "--lr"
+          - "5e-5"
+          - "--batch_size"
+          - "4"
+          - "--grad_accum"
+          - "4"
+          - "--beam_width"
+          - "10"
+          - "--max_src_len"
+          - "64"
+          - "--max_tgt_len"
+          - "128"
+          - "--num_workers"
+          - "2"
+          - "--fp16"
+          - "--early_stop_patience"
+          - "15"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

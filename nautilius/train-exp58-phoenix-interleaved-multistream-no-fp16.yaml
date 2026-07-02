@@ -1,0 +1,124 @@
+# Experiment 58: PHOENIX-2014-T — Interleaved multistream + velocity, NO fp16
+#
+# First fair run of the interleaved multistream + velocity architecture.
+# Exp 50 and Exp 52 both collapsed: Train loss = 0.0000 every epoch because
+# fp16 generated NaN/Inf gradients in the ConformerBlocks, and the GradScaler
+# skipped every batch indefinitely. Same root cause as exp27 collapse.
+#
+# Fix applied here:
+#   - Remove --fp16 entirely (prevents NaN gradient propagation)
+#   - Reduce LR: 3e-4 → 1e-4 (extra safety margin for the deeper interleaved stack)
+#
+# Everything else matches exp50 exactly to isolate the fp16 effect:
+#   --arch interleaved --multistream --use_motion
+#   --dim 256 --ffn_expand 4
+#   --ctc_smoothing 0.05 --dropout 0.2
+#
+# Comparison points:
+#   exp25  — sequential multistream + velocity, from scratch, BLEU-4=12.74
+#   exp50  — interleaved multistream + velocity, fp16, collapsed (Train=0.0)
+#   exp58  — interleaved multistream + velocity, no fp16, lower LR ← this
+#
+# Checkpoint saved to: /data/experiments/models/exp58_phoenix_interleaved_multistream_no_fp16/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp58-phoenix-interleaved-multistream-no-fp16
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+              - key: nvidia.com/gpu.memory
+                operator: Gt
+                values:
+                - "15000"
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp58_phoenix_interleaved_multistream_no_fp16"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "32"
+          - "--grad_accum"
+          - "1"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "1e-4"
+          - "--dropout"
+          - "0.2"
+          - "--num_workers"
+          - "4"
+          - "--arch"
+          - "interleaved"
+          - "--multistream"
+          - "--use_motion"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.05"
+          - "--early_stop_patience"
+          - "100"
+          - "--preload_data"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

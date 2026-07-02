@@ -53,6 +53,13 @@ def resolve_translation_config(dataset: str, requested_model: str = "auto"):
     """Pick a stronger dataset-aware seq2seq decoder default."""
     dataset = dataset.lower()
     if requested_model and requested_model != "auto":
+        model_lower = requested_model.lower()
+        # NLLB models need deu_Latn for German output on PHOENIX
+        if "nllb" in model_lower and dataset == "phoenix":
+            return {"bart_model": requested_model, "target_lang": "deu_Latn"}
+        # mBART models need de_DE for German output on PHOENIX
+        if "mbart" in model_lower and dataset == "phoenix":
+            return {"bart_model": requested_model, "target_lang": "de_DE"}
         return {"bart_model": requested_model, "target_lang": None}
 
     if dataset == "phoenix":

@@ -1,0 +1,149 @@
+# Experiment 59: PHOENIX-2014-T — Joint Sign2Gloss2Text with NLLB-200, warm-started
+#
+# End-to-end Sign→German pipeline chaining the two strongest components:
+#   - Visual encoder: exp25 checkpoint (sequential multistream, BLEU-4=12.74)
+#   - NLLB decoder:  exp56 checkpoint (NLLB-200-distilled-600M Gloss2Text)
+#
+# Architecture:
+#   sign keypoints → multistream encoder (from exp25)
+#                  → auxiliary CTC on GLOSS tokens (intermediate supervision)
+#                  → NLLB-200 decoder (from exp56) → German text
+#
+# NLLB is chosen over mBART here because:
+#   - Stronger multilingual pre-training (200 languages vs 50)
+#   - Expected to outperform mBART-50 on low-resource gloss→German
+#   - exp56 provides fine-tuned NLLB weights on gold PHOENIX glosses
+#
+# Training stages (three-phase via freeze_bart_epochs/warmup_bart_epochs):
+#   Stage 1 (epochs 0-10):  CTC-only, NLLB frozen — encoder adapts to gloss
+#   Stage 2 (epochs 10-20): NLLB unfreezes, encoder detached — decoder adapts
+#   Stage 3 (remaining):    Full joint fine-tuning, encoder LR scaled down
+#
+# Warm-start details:
+#   --pretrained_path: loads all encoder weights from exp25 (head skipped,
+#     since CTC vocab differs: German text words → gloss tokens)
+#   --pretrained_bart_path: loads exp56 NLLB weights directly into
+#     translation_head.bart (same NLLB architecture, strict=False)
+#   --bart_model: facebook/nllb-200-distilled-600M
+#     → resolve_translation_config detects nllb+phoenix → target_lang=deu_Latn
+#     → forced_bos_token_id set automatically for German output
+#
+# Comparison points:
+#   exp32  — multistream Sign2Gloss2Text, mBART, random init
+#   exp59  — multistream Sign2Gloss2Text, NLLB, warm-started from exp25+exp56
+#
+# Checkpoint saved to: /data/experiments/models/exp59_phoenix_sign2gloss2text_joint/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp59-phoenix-sign2gloss2text-joint
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp59_phoenix_sign2gloss2text_joint"
+          - "--epochs"
+          - "200"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.0"
+          - "--batch_size"
+          - "4"
+          - "--grad_accum"
+          - "4"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "5e-5"
+          - "--dropout"
+          - "0.2"
+          - "--num_workers"
+          - "4"
+          - "--multistream"
+          - "--phoenix_ctc_target"
+          - "gloss"
+          - "--use_bart"
+          - "--bart_model"
+          - "facebook/nllb-200-distilled-600M"
+          - "--ctc_weight"
+          - "0.3"
+          - "--freeze_bart_epochs"
+          - "10"
+          - "--warmup_bart_epochs"
+          - "10"
+          - "--joint_encoder_lr_scale"
+          - "0.2"
+          - "--joint_bart_lr_scale"
+          - "0.5"
+          - "--ffn_expand"
+          - "4"
+          - "--label_smoothing"
+          - "0.1"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "30"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp25_phoenix_multistream_ctc_german_tuned/best_model.pt"
+          - "--pretrained_bart_path"
+          - "/data/experiments/models/exp56_phoenix_gloss2text_nllb200/best_exp56_phoenix_gloss2text_nllb200.pt"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

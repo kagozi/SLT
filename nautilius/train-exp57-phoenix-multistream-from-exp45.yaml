@@ -1,0 +1,126 @@
+# Experiment 57: PHOENIX-2014-T — Multistream interleaved, transferred from exp45
+#
+# Full-weight transfer from exp45 (How2Sign multistream interleaved, BPE-500)
+# to PHOENIX-2014-T German translation. Unlike exp54 (which loaded a flat ASL
+# checkpoint into a multistream model and could only transfer transformer_blocks),
+# here the source and target share identical architecture: both are interleaved
+# multistream with the same per-stream projections, ConformerBlocks, and fusion
+# attention. All encoder components transfer by name.
+#
+# Architecture must match exp45 exactly for full transfer:
+#   --arch interleaved --multistream   (no --use_motion — exp45 doesn't have it)
+#   --dim 384 --ffn_expand 2
+#
+# What transfers: proj_pose/lhand/rhand/face, conv_pose/lhand/rhand/face,
+#                 fusion_attn, transformer_blocks, norm
+# What does NOT transfer: head (vocabulary mismatch: BPE-500 English vs German)
+#
+# Fine-tuning LR is halved vs scratch (1e-4 vs 2e-4 in exp45) to avoid
+# destroying the transferred representations.
+#
+# Comparison points:
+#   exp25  — sequential multistream, from scratch, BLEU-4=12.74
+#   exp54  — interleaved multistream, partial flat ASL transfer
+#   exp57  — interleaved multistream, full How2Sign multistream transfer ← this
+#
+# Checkpoint saved to: /data/experiments/models/exp57_phoenix_multistream_from_exp45/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp57-phoenix-multistream-from-exp45
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp57_phoenix_multistream_from_exp45"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "32"
+          - "--grad_accum"
+          - "1"
+          - "--fp16"
+          - "--dim"
+          - "384"
+          - "--lr"
+          - "1e-4"
+          - "--dropout"
+          - "0.2"
+          - "--num_workers"
+          - "4"
+          - "--arch"
+          - "interleaved"
+          - "--multistream"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "2"
+          - "--ctc_smoothing"
+          - "0.05"
+          - "--early_stop_patience"
+          - "100"
+          - "--preload_data"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp45_how2sign_multistream_ctc_bpe500/best_model.pt"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

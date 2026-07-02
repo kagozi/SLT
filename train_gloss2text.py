@@ -36,13 +36,28 @@ from transformers import (
 
 MBART_MODEL  = "facebook/mbart-large-50-many-to-many-mmt"
 BART_MODEL   = "facebook/bart-large"
-SRC_LANG     = "de_DE"
-TGT_LANG     = "de_DE"
+NLLB_MODEL   = "facebook/nllb-200-distilled-600M"
 BEAM_WIDTHS  = [1, 2, 4, 8, 16, 32]
 
+# Language codes per model family
+_LANG_CODES = {
+    "mbart": ("de_DE",    "de_DE"),
+    "nllb":  ("deu_Latn", "deu_Latn"),
+}
 
-def is_mbart(model_name: str) -> bool:
-    return "mbart" in model_name.lower()
+
+def uses_lang_codes(model_name: str) -> bool:
+    """True for models that require explicit src/tgt language tokens (mBART, NLLB)."""
+    n = model_name.lower()
+    return "mbart" in n or "nllb" in n
+
+
+def get_lang_codes(model_name: str):
+    """Return (src_lang, tgt_lang) for models that need them."""
+    n = model_name.lower()
+    if "nllb" in n:
+        return _LANG_CODES["nllb"]
+    return _LANG_CODES["mbart"]
 
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
@@ -73,13 +88,13 @@ def load_phoenix_pairs(root_dir: str, split: str):
     return pairs
 
 
-def make_collate(tokenizer, max_src_len, max_tgt_len, use_mbart: bool):
+def make_collate(tokenizer, max_src_len, max_tgt_len, src_lang, tgt_lang):
     def collate(batch):
         glosses = [b[0] for b in batch]
         translations = [b[1] for b in batch]
 
-        if use_mbart:
-            tokenizer.src_lang = SRC_LANG
+        if src_lang:
+            tokenizer.src_lang = src_lang
         enc = tokenizer(
             text=glosses,
             max_length=max_src_len,
@@ -87,8 +102,8 @@ def make_collate(tokenizer, max_src_len, max_tgt_len, use_mbart: bool):
             truncation=True,
             return_tensors="pt",
         )
-        if use_mbart:
-            tokenizer.tgt_lang = TGT_LANG
+        if tgt_lang:
+            tokenizer.tgt_lang = tgt_lang
         tgt = tokenizer(
             text_target=translations,
             max_length=max_tgt_len,
@@ -108,9 +123,9 @@ def make_collate(tokenizer, max_src_len, max_tgt_len, use_mbart: bool):
 
 @torch.no_grad()
 def evaluate(model, loader, tokenizer, device, beam_width=4, max_tgt_len=128,
-             use_mbart: bool = True):
+             tgt_lang=None):
     model.eval()
-    forced_bos = tokenizer.lang_code_to_id[TGT_LANG] if use_mbart else None
+    forced_bos = tokenizer.lang_code_to_id[tgt_lang] if tgt_lang else None
     all_preds, all_refs = [], []
 
     for batch in loader:
@@ -153,8 +168,8 @@ def main():
     parser.add_argument("--exp_name",    type=str,
         default="exp33_phoenix_gloss2text_maia")
     parser.add_argument("--bart_model",  type=str, default=MBART_MODEL,
-        help="Seq2seq model to fine-tune. Use facebook/mbart-large-50-many-to-many-mmt "
-             "for multilingual (German-native) or facebook/bart-large for English BART.")
+        help="Seq2seq model to fine-tune: mbart-large-50 (multilingual, German-native), "
+             "bart-large (English pre-trained), or nllb-200-distilled-600M (multilingual).")
     parser.add_argument("--epochs",      type=int,   default=60)
     parser.add_argument("--lr",          type=float, default=5e-5)
     parser.add_argument("--batch_size",  type=int,   default=4)
@@ -167,7 +182,8 @@ def main():
     parser.add_argument("--seed",        type=int,   default=42)
     parser.add_argument("--early_stop_patience", type=int, default=15)
     args = parser.parse_args()
-    use_mbart = is_mbart(args.bart_model)
+    use_lang_codes = uses_lang_codes(args.bart_model)
+    src_lang, tgt_lang = get_lang_codes(args.bart_model) if use_lang_codes else (None, None)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -196,7 +212,7 @@ def main():
     test_pairs  = load_phoenix_pairs(args.root_dir, "test")
     print(f"  train={len(train_pairs)}, val={len(val_pairs)}, test={len(test_pairs)}")
 
-    collate = make_collate(tokenizer, args.max_src_len, args.max_tgt_len, use_mbart)
+    collate = make_collate(tokenizer, args.max_src_len, args.max_tgt_len, src_lang, tgt_lang)
     train_loader = DataLoader(GlossTranslationDataset(train_pairs),
                               args.batch_size, shuffle=True,
                               collate_fn=collate, num_workers=args.num_workers)
@@ -259,7 +275,7 @@ def main():
         avg_loss = total_loss / len(train_loader)
         val_m    = evaluate(model, val_loader, tokenizer, device,
                             beam_width=4, max_tgt_len=args.max_tgt_len,
-                            use_mbart=use_mbart)
+                            tgt_lang=tgt_lang)
 
         print(f"  Epoch {epoch+1:3d}/{args.epochs}  "
               f"loss={avg_loss:.4f}  val_BLEU-4={val_m['BLEU-4']:.2f}")
@@ -290,7 +306,7 @@ def main():
     # ── Final test evaluation ─────────────────────────────────────────────────
     test_m = evaluate(model, test_loader, tokenizer, device,
                       beam_width=args.beam_width, max_tgt_len=args.max_tgt_len,
-                      use_mbart=use_mbart)
+                      tgt_lang=tgt_lang)
     print(f"\n{'='*60}")
     print("📊 TEST SET RESULTS")
     print(f"{'='*60}")
@@ -307,7 +323,7 @@ def main():
         for bw in BEAM_WIDTHS:
             m = evaluate(model, loader, tokenizer, device,
                          beam_width=bw, max_tgt_len=args.max_tgt_len,
-                         use_mbart=use_mbart)
+                         tgt_lang=tgt_lang)
             sweep_table.add_data(split_name, bw,
                                  round(m["BLEU-1"], 4), round(m["BLEU-4"], 4))
             print(f"  [{split_name}] beam={bw:2d}  BLEU-4={m['BLEU-4']:.4f}")
