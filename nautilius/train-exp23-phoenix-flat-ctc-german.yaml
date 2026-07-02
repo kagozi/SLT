@@ -1,6 +1,6 @@
 # Experiment 23: PHOENIX-2014-T — Flat Encoder + CTC on German Text
 #
-# Replicates the Maia et al. (2025) glossless CTC paradigm:
+# Glossless CTC paradigm:
 #   - No ground-truth gloss annotations used
 #   - CTC loss directly on normalized German text word tokens
 #   - Flat single-stream transformer encoder (no multistream, no motion)
@@ -8,7 +8,7 @@
 #
 # This is the controlled baseline for Exp 24.  Comparing Exp 23 vs Exp 24
 # isolates the effect of multistream + motion features within the exact
-# same CTC-on-text training paradigm as Maia et al.
+# same CTC-on-text training paradigm.
 #
 # Key difference from our Exp 1 (Sign2Gloss):
 #   Exp 1 uses German gloss tokens as CTC target

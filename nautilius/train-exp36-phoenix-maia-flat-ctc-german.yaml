@@ -1,17 +1,16 @@
-# Experiment 36: PHOENIX-2014-T — Maia-Style Flat CTC German (True Replication)
+# Experiment 36: PHOENIX-2014-T — Interleaved Flat CTC German
 #
-# True replication of Maia et al. (Sign2German) architecture on PHOENIX-2014-T,
-# using the same hyperparameter spec as Exp 34 (How2Sign Maia replication).
+# Interleaved Conv+Transformer architecture on PHOENIX-2014-T,
+# using the same hyperparameter spec as Exp 34 (How2Sign interleaved).
 #
-# Maia-matched specs:
+# Specs:
 #   --arch interleaved  → 6 ConformerBlocks (Conv+Transformer pairs, kernels 11,5 alternating)
-#   --dim 384           → matches Maia
-#   --ffn_expand 2      → matches Maia
-#   --lr 4e-4           → matches Maia
-#   --dropout 0.1       → Maia uses minimal regularisation
+#   --dim 384
+#   --ffn_expand 2
+#   --lr 4e-4
+#   --dropout 0.1
 #
-# Note: Exp 23 is NOT a Maia replication — it uses dim=256, ffn_expand=4, lr=1e-3.
-# This experiment establishes the true Maia baseline for PHOENIX.
+# Note: Exp 23 uses dim=256, ffn_expand=4, lr=1e-3 — different config.
 #
 # Serves as the flat baseline for Exp 37 (multistream + motion improvement).
 # Checkpoint saved to: /data/experiments/models/exp36_phoenix_maia_flat_ctc_german/

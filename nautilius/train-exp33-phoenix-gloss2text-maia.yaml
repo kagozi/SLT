@@ -1,4 +1,4 @@
-# Experiment 33: PHOENIX-2014-T — Gloss2Text NMT Oracle (Maia et al.)
+# Experiment 33: PHOENIX-2014-T — Gloss2Text NMT Oracle
 #
 # Pure text-to-text translation: gold gloss sequences → German sentences.
 # No keypoints, no visual encoder — mBART-50 fine-tuned directly on
@@ -7,7 +7,6 @@
 # This is the upper-bound oracle for the Sign2Gloss2Text pipeline:
 # given perfect gloss recognition, how well can mBART recover German?
 #
-# Replicates the Gloss2Text component of Maia et al. (Sign2German, 2025).
 # Results contextualize Exp 32 (multistream Sign2Gloss2Text):
 #   Exp 32 gap from Exp 33 ≈ cost of imperfect sign recognition.
 #
@@ -16,7 +15,6 @@
 #   Exp 25  (multistream CTC-on-text, no glosses): BLEU-4 ≈ 14.30
 #   Exp 32  (multistream Sign2Gloss2Text):         BLEU-4 ≈ 16+
 #   Exp 33  (this, gold-gloss Gloss2Text oracle):  expected higher
-#   Maia et al. Gloss2Text:                        BLEU-4 ≈ 23+ (paper)
 #
 # Checkpoint saved to: /data/experiments/models/exp33_phoenix_gloss2text_maia/
 apiVersion: batch/v1

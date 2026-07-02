@@ -1,7 +1,6 @@
-# Experiment 32: PHOENIX-2014-T — Multistream Sign2Gloss2Text (Maia et al. replication)
+# Experiment 32: PHOENIX-2014-T — Multistream Sign2Gloss2Text
 #
-# Replicates the traditional Sign2Gloss2Text pipeline from Maia et al. (Sign2German)
-# using the multistream encoder:
+# Sign2Gloss2Text pipeline using the multistream encoder:
 #   Sign → multistream CTC on ground-truth GLOSS tokens → mBART → German text
 #
 # This is the complement to Exp 23/25 (glossless CTC-on-text):
@@ -16,7 +15,7 @@
 #             → CTC gloss head (auxiliary)
 #             → mBART decoder (receives encoder hidden states)
 #
-# Three-stage training (as in Maia repo):
+# Three-stage training:
 #   Stage 1 (epochs 0-20):   CTC-only, mBART frozen
 #   Stage 2 (epochs 20-40):  mBART unfreezes, encoder detached
 #   Stage 3 (remaining):     Full joint fine-tuning
@@ -25,7 +24,7 @@
 #   - multistream encoder
 #   - ctc_smoothing=0.1
 #   - early_stop_patience=50
-#   - ctc_weight=0.3 (matches Maia's paper default)
+#   - ctc_weight=0.3
 #   - dropout=0.2
 #
 # Checkpoint saved to: /data/experiments/models/exp32_phoenix_multistream_sign2gloss2text_maia/

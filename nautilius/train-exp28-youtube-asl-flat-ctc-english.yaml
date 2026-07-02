@@ -2,7 +2,7 @@
 #
 # Replicates the Exp 23/26 CTC-on-text paradigm on YouTube-ASL (~610K samples).
 # Flat single-stream encoder, CTC on normalized English translation text.
-# No BART decoder — pure CTC, matching the Maia et al. glossless paradigm.
+# No BART decoder — pure CTC, glossless paradigm.
 #
 # Serves as:
 #   (a) YouTube-ASL standalone flat CTC baseline

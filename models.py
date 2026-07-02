@@ -97,10 +97,10 @@ class TransformerBlock(nn.Module):
 
 
 class ConformerBlock(nn.Module):
-    """Paired Conv + Transformer block (Maia-style interleaved architecture).
+    """Paired Conv + Transformer block (interleaved architecture).
 
-    Maia's ASL2Text encoder interleaves conv and self-attention at every depth
-    level rather than running all conv blocks first, then all transformer blocks.
+    Interleaves conv and self-attention at every depth level rather than
+    running all conv blocks first, then all transformer blocks.
     This block is the unit that gets stacked N times to build that encoder.
     """
     def __init__(self, dim, conv_kernel, num_heads=8, ffn_expand=4, dropout=0.0):
@@ -317,8 +317,7 @@ class SignLanguageTransformer(nn.Module):
         self.norm = nn.LayerNorm(dim)
 
         if arch == 'interleaved':
-            # 6 paired (Conv + Transformer) blocks, alternating kernels — replicates
-            # Maia et al. ASL2Text encoder (6 blocks, kernels 11 and 5).
+            # 6 paired (Conv + Transformer) blocks, alternating kernels 11 and 5.
             self.conv_blocks = nn.ModuleList([
                 ConformerBlock(dim, k, num_heads=8, ffn_expand=ffn_expand, dropout=dropout)
                 for k in [11, 5, 11, 5, 11, 5]
@@ -581,7 +580,7 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
                  bart_model: str = 'facebook/bart-base',
                  ctc_weight: float = 0.3, ffn_expand: int = 4,
                  label_smoothing: float = 0.1,
-                 use_motion: bool = False,   # use_motion ignored; motion always on
+                 use_motion: bool = True,
                  arch: str = 'sequential'):
         # Bootstrap shared components (pos_encoding, transformer_blocks, head,
         # translation_head) via parent with a dummy input_dim=1.
@@ -593,6 +592,7 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
             use_motion=False,   # velocity handled per-stream in encode()
             arch=arch,
         )
+        self.use_motion = use_motion
         # Remove flat-encoder components (replaced by per-stream equivalents)
         del self.input_proj, self.norm, self.conv_blocks
 
@@ -605,10 +605,11 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
                 for _ in range(4)
             ])
 
-        # Per-stream input dims (raw features × 3 after velocity + acceleration concat)
-        pose_d = 39 * 3    # 117
-        hand_d = 63 * 3    # 189  (L and R hands share this projection)
-        face_d = 60 * 3    # 180
+        # Per-stream input dims: ×3 when use_motion (raw + vel + acc), ×1 otherwise
+        _m = 3 if use_motion else 1
+        pose_d = 39 * _m
+        hand_d = 63 * _m
+        face_d = 60 * _m
 
         # Stream projections + normalisation
         self.proj_pose  = nn.Linear(pose_d, dim, bias=False)
@@ -622,7 +623,7 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
 
         # Per-stream block stacks.
         # interleaved: 3 ConformerBlocks (Conv+Transformer) per stream — each stream
-        #   gets Maia-style local context before cross-stream fusion.
+        #   gets interleaved local context before cross-stream fusion.
         # sequential: 3 ConvBlocks per stream (current default).
         def _conv_stack():
             if arch == 'interleaved':
@@ -657,7 +658,7 @@ class MultiStreamSignLanguageTransformer(SignLanguageTransformer):
         return torch.cat([feat, vel, acc], dim=-1)
 
     def _encode_stream(self, raw, proj, norm, conv_blocks, mask):
-        x = norm(proj(self._add_velocity(raw)))
+        x = norm(proj(self._add_velocity(raw) if self.use_motion else raw))
         for blk in conv_blocks:
             x, mask = blk(x, mask)
         return x, mask

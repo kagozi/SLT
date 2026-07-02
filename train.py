@@ -579,7 +579,7 @@ def main():
                         choices=['gloss', 'translation'],
                         help='CTC target for PHOENIX dataset: gloss uses ground-truth gloss '
                              'annotations, translation uses normalized German text tokens '
-                             '(Maia et al. 2025 glossless CTC paradigm).')
+                             '(glossless CTC paradigm).')
     
     # Training
     parser.add_argument('--epochs', type=int, default=100)
@@ -648,7 +648,7 @@ def main():
     parser.add_argument('--multistream', action='store_true',
                         help='Use MultiStreamSignLanguageTransformer: separate '
                              'pose/hand/face streams with cross-attention fusion. '
-                             'Always includes per-stream velocity features.')
+                             'Use --use_motion to include per-stream velocity+acceleration.')
     parser.add_argument('--contrastive_weight', type=float, default=0.0,
                         help='Weight for NT-Xent contrastive loss on encoder '
                              'representations (two augmented views per batch). '
@@ -662,8 +662,8 @@ def main():
                         choices=['sequential', 'interleaved'],
                         help='Encoder block layout. sequential (default): 3 ConvBlocks then '
                              '4 TransformerBlocks. interleaved: 6 paired ConformerBlocks '
-                             '(Conv+Transformer alternating kernels 11/5) — replicates Maia '
-                             'et al. ASL2Text encoder. For --multistream, each stream gets 3 '
+                             '(Conv+Transformer alternating kernels 11/5). '
+                             'For --multistream, each stream gets 3 '
                              'ConformerBlocks then shared 4 TransformerBlocks after fusion.')
     parser.add_argument('--ctc_smoothing', type=float, default=0.1,
                         help='Uniform label smoothing on CTC loss (default 0.1). '
@@ -922,9 +922,9 @@ def main():
         arch=args.arch,
     )
     if args.multistream:
-        # Multi-stream encoder always computes per-stream velocity; use_motion ignored
-        model = MultiStreamSignLanguageTransformer(**_model_kwargs)
-        print(f"  🔀 Encoder: MultiStream (pose/lhand/rhand/face + per-stream velocity) [{args.arch}]")
+        model = MultiStreamSignLanguageTransformer(use_motion=args.use_motion, **_model_kwargs)
+        motion_tag = " + velocity" if args.use_motion else " keypoints-only"
+        print(f"  🔀 Encoder: MultiStream (pose/lhand/rhand/face{motion_tag}) [{args.arch}]")
     else:
         model = SignLanguageTransformer(use_motion=args.use_motion, **_model_kwargs)
         motion_tag = " + velocity" if args.use_motion else ""

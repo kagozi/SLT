@@ -2,7 +2,7 @@
 train_gloss2text.py
 Fine-tunes mBART-50 on PHOENIX-2014-T gloss → German translation pairs.
 
-Replicates the Gloss2Text component of Maia et al. (Sign2German, 2025):
+Gloss2Text NMT pipeline on PHOENIX-2014-T:
   input:  space-separated PHOENIX gloss sequence   (e.g. "HEUTE WETTER GUT")
   output: German translation sentence              (e.g. "Heute ist das Wetter gut.")
 
@@ -34,10 +34,15 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
-BART_MODEL = "facebook/mbart-large-50-many-to-many-mmt"
-SRC_LANG   = "de_DE"   # treat glosses as German-derived tokens
-TGT_LANG   = "de_DE"
-BEAM_WIDTHS = [1, 2, 4, 8, 16, 32]
+MBART_MODEL  = "facebook/mbart-large-50-many-to-many-mmt"
+BART_MODEL   = "facebook/bart-large"
+SRC_LANG     = "de_DE"
+TGT_LANG     = "de_DE"
+BEAM_WIDTHS  = [1, 2, 4, 8, 16, 32]
+
+
+def is_mbart(model_name: str) -> bool:
+    return "mbart" in model_name.lower()
 
 
 # ── Dataset ──────────────────────────────────────────────────────────────────
@@ -68,12 +73,13 @@ def load_phoenix_pairs(root_dir: str, split: str):
     return pairs
 
 
-def make_collate(tokenizer, max_src_len, max_tgt_len):
+def make_collate(tokenizer, max_src_len, max_tgt_len, use_mbart: bool):
     def collate(batch):
         glosses = [b[0] for b in batch]
         translations = [b[1] for b in batch]
 
-        tokenizer.src_lang = SRC_LANG
+        if use_mbart:
+            tokenizer.src_lang = SRC_LANG
         enc = tokenizer(
             text=glosses,
             max_length=max_src_len,
@@ -81,7 +87,8 @@ def make_collate(tokenizer, max_src_len, max_tgt_len):
             truncation=True,
             return_tensors="pt",
         )
-        tokenizer.tgt_lang = TGT_LANG
+        if use_mbart:
+            tokenizer.tgt_lang = TGT_LANG
         tgt = tokenizer(
             text_target=translations,
             max_length=max_tgt_len,
@@ -100,23 +107,26 @@ def make_collate(tokenizer, max_src_len, max_tgt_len):
 # ── Evaluation ───────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def evaluate(model, loader, tokenizer, device, beam_width=4, max_tgt_len=128):
+def evaluate(model, loader, tokenizer, device, beam_width=4, max_tgt_len=128,
+             use_mbart: bool = True):
     model.eval()
-    forced_bos = tokenizer.lang_code_to_id[TGT_LANG]
+    forced_bos = tokenizer.lang_code_to_id[TGT_LANG] if use_mbart else None
     all_preds, all_refs = [], []
 
     for batch in loader:
         input_ids      = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-        generated = model.generate(
+        gen_kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             num_beams=beam_width,
             max_length=max_tgt_len,
-            forced_bos_token_id=forced_bos,
             no_repeat_ngram_size=3,
             length_penalty=1.0,
         )
+        if forced_bos is not None:
+            gen_kwargs["forced_bos_token_id"] = forced_bos
+        generated = model.generate(**gen_kwargs)
         for ids in generated:
             all_preds.append(tokenizer.decode(ids, skip_special_tokens=True))
 
@@ -136,12 +146,15 @@ def evaluate(model, loader, tokenizer, device, beam_width=4, max_tgt_len=128):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Gloss→German mBART fine-tuning")
+    parser = argparse.ArgumentParser(description="Gloss→German seq2seq fine-tuning")
     parser.add_argument("--root_dir", type=str,
         default="/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T")
     parser.add_argument("--output_dir",  type=str, default="/data/experiments")
     parser.add_argument("--exp_name",    type=str,
         default="exp33_phoenix_gloss2text_maia")
+    parser.add_argument("--bart_model",  type=str, default=MBART_MODEL,
+        help="Seq2seq model to fine-tune. Use facebook/mbart-large-50-many-to-many-mmt "
+             "for multilingual (German-native) or facebook/bart-large for English BART.")
     parser.add_argument("--epochs",      type=int,   default=60)
     parser.add_argument("--lr",          type=float, default=5e-5)
     parser.add_argument("--batch_size",  type=int,   default=4)
@@ -154,6 +167,7 @@ def main():
     parser.add_argument("--seed",        type=int,   default=42)
     parser.add_argument("--early_stop_patience", type=int, default=15)
     args = parser.parse_args()
+    use_mbart = is_mbart(args.bart_model)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -168,9 +182,9 @@ def main():
     os.environ.setdefault("WANDB_DELETE_LOCAL", "1")
     wandb.init(project="slt", name=args.exp_name, config=vars(args))
 
-    print("Loading mBART tokenizer and model...")
-    tokenizer = AutoTokenizer.from_pretrained(BART_MODEL)
-    model     = AutoModelForSeq2SeqLM.from_pretrained(BART_MODEL)
+    print(f"Loading tokenizer and model: {args.bart_model}")
+    tokenizer = AutoTokenizer.from_pretrained(args.bart_model)
+    model     = AutoModelForSeq2SeqLM.from_pretrained(args.bart_model)
     device    = "cuda" if torch.cuda.is_available() else "cpu"
     model.gradient_checkpointing_enable()
     model     = model.to(device)
@@ -182,7 +196,7 @@ def main():
     test_pairs  = load_phoenix_pairs(args.root_dir, "test")
     print(f"  train={len(train_pairs)}, val={len(val_pairs)}, test={len(test_pairs)}")
 
-    collate = make_collate(tokenizer, args.max_src_len, args.max_tgt_len)
+    collate = make_collate(tokenizer, args.max_src_len, args.max_tgt_len, use_mbart)
     train_loader = DataLoader(GlossTranslationDataset(train_pairs),
                               args.batch_size, shuffle=True,
                               collate_fn=collate, num_workers=args.num_workers)
@@ -244,7 +258,8 @@ def main():
 
         avg_loss = total_loss / len(train_loader)
         val_m    = evaluate(model, val_loader, tokenizer, device,
-                            beam_width=4, max_tgt_len=args.max_tgt_len)
+                            beam_width=4, max_tgt_len=args.max_tgt_len,
+                            use_mbart=use_mbart)
 
         print(f"  Epoch {epoch+1:3d}/{args.epochs}  "
               f"loss={avg_loss:.4f}  val_BLEU-4={val_m['BLEU-4']:.2f}")
@@ -274,7 +289,8 @@ def main():
 
     # ── Final test evaluation ─────────────────────────────────────────────────
     test_m = evaluate(model, test_loader, tokenizer, device,
-                      beam_width=args.beam_width, max_tgt_len=args.max_tgt_len)
+                      beam_width=args.beam_width, max_tgt_len=args.max_tgt_len,
+                      use_mbart=use_mbart)
     print(f"\n{'='*60}")
     print("📊 TEST SET RESULTS")
     print(f"{'='*60}")
@@ -290,7 +306,8 @@ def main():
     for split_name, loader in [("val", val_loader), ("test", test_loader)]:
         for bw in BEAM_WIDTHS:
             m = evaluate(model, loader, tokenizer, device,
-                         beam_width=bw, max_tgt_len=args.max_tgt_len)
+                         beam_width=bw, max_tgt_len=args.max_tgt_len,
+                         use_mbart=use_mbart)
             sweep_table.add_data(split_name, bw,
                                  round(m["BLEU-1"], 4), round(m["BLEU-4"], 4))
             print(f"  [{split_name}] beam={bw:2d}  BLEU-4={m['BLEU-4']:.4f}")

@@ -1,20 +1,19 @@
-# Experiment 34: How2Sign — Maia-Style Flat CTC English (True Replication)
+# Experiment 34: How2Sign — Interleaved Flat CTC English
 #
-# True replication of Maia et al. (ASL2Text.ipynb) in our PyTorch framework,
-# including the interleaved Conv+Transformer block architecture.
+# Flat CTC with interleaved Conv+Transformer block architecture.
 #
-# Maia's notebook key specs (TensorFlow, ASL subset):
+# Key specs:
 #   dim=384, FFN expand=2, lr=4e-4, wd=1e-4, FRAME_LEN=180
 #   6 interleaved [Conv(k=11/5) + Transformer] blocks
 #   CTC on English text
 #
 # How this maps to our flags:
 #   --arch interleaved  → 6 ConformerBlocks (Conv+Transformer pairs, kernels 11,5 alternating)
-#   --dim 384           → matches Maia
-#   --ffn_expand 2      → matches Maia
-#   --lr 4e-4           → matches Maia
-#   --max_frames 180    → matches Maia FRAME_LEN
-#   --dropout 0.1       → Maia uses minimal regularisation
+#   --dim 384
+#   --ffn_expand 2
+#   --lr 4e-4
+#   --max_frames 180
+#   --dropout 0.1
 #
 # Serves as the proven baseline for Exp 35 (multistream + motion improvement).
 # Checkpoint saved to: /data/experiments/models/exp34_how2sign_maia_flat_ctc_english/

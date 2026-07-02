@@ -1,6 +1,6 @@
-# Experiment 35: How2Sign — Maia-Style Multistream CTC English (Fine-tuned)
+# Experiment 35: How2Sign — Interleaved Multistream CTC English (Fine-tuned)
 #
-# Improvement over Maia (Exp 34) using multistream + motion.
+# Improvement over Exp 34 using multistream + motion.
 #
 # Architecture:
 #   --arch interleaved --multistream:
@@ -9,8 +9,8 @@
 #     velocity + acceleration features (motion). Streams are then fused via
 #     cross-stream attention, followed by 4 shared TransformerBlocks.
 #
-# This directly tests whether multistream + motion improves over Maia's flat encoder,
-# while keeping the same Conformer-style interleaved block structure.
+# Tests whether multistream + motion improves over the flat interleaved encoder,
+# keeping the same Conformer-style interleaved block structure.
 #
 # Transfer from Exp 34: only transformer_blocks weights carry over (shared across
 # flat→multistream); per-stream projections and ConformerBlocks train from scratch.
