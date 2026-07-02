@@ -1,0 +1,113 @@
+# Experiment 52: PHOENIX-2014-T — Multistream interleaved arch, keypoints-only (no velocity), from scratch
+#
+# Velocity ablation of exp50 (interleaved multistream + velocity).
+# Removes per-stream velocity and acceleration; streams see raw keypoints only.
+# Completes the 2×2 ablation grid:
+#
+#   arch \ velocity   with vel   no vel
+#   sequential        exp25      exp51
+#   interleaved       exp50      exp52 ← this
+#
+# The interleaved architecture has self-attention inside every ConformerBlock,
+# so it can attend across time and potentially recover velocity-like information
+# even without explicit motion features — this experiment tests that hypothesis.
+#
+# Checkpoint saved to: /data/experiments/models/exp52_phoenix_multistream_maia_no_velocity/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp52-phoenix-multistream-maia-no-velocity
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp52_phoenix_multistream_maia_no_velocity"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "32"
+          - "--grad_accum"
+          - "1"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "3e-4"
+          - "--dropout"
+          - "0.2"
+          - "--num_workers"
+          - "4"
+          - "--multistream"
+          - "--arch"
+          - "interleaved"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.05"
+          - "--early_stop_patience"
+          - "100"
+          - "--preload_data"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

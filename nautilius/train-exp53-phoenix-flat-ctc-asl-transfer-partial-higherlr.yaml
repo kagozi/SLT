@@ -1,0 +1,113 @@
+# Experiment 53: PHOENIX-2014-T — Flat CTC, ASL Partial Transfer, higher LR (3e-3)
+#
+# LR sensitivity test on top of exp49 (partial encoder transfer, BLEU-4=7.93).
+# exp49 used lr=1e-3; this pushes to 3e-3 to see if faster exploration of the
+# randomly-reinitialised upper layers improves convergence.
+#
+# Rationale: with --pretrain_num_layers 1, only input_proj + conv_blocks.0 are
+# transferred. The remaining layers (conv_blocks.1+, transformer_blocks) are
+# randomly initialised and may benefit from a more aggressive LR.
+# Risk: the single transferred layer (conv_blocks.0) could be destabilised.
+#
+# Everything else is identical to exp49.
+#
+# Checkpoint saved to: /data/experiments/models/exp53_phoenix_flat_ctc_asl_transfer_partial_higherlr/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp53-phoenix-flat-ctc-asl-transfer-partial-higherlr
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp53_phoenix_flat_ctc_asl_transfer_partial_higherlr"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "64"
+          - "--grad_accum"
+          - "1"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "3e-3"
+          - "--dropout"
+          - "0.3"
+          - "--num_workers"
+          - "4"
+          - "--preload_data"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.1"
+          - "--early_stop_patience"
+          - "30"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp38_how2sign_flat_ctc_bpe500/best_model.pt"
+          - "--pretrain_num_layers"
+          - "1"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "1"
+            memory: "4Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "1"
+            memory: "4Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

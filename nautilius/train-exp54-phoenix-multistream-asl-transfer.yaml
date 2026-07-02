@@ -1,0 +1,121 @@
+# Experiment 54: PHOENIX-2014-T — Multistream sequential, ASL transfer (transformer blocks only)
+#
+# The untried combination: multistream encoder + ASL pretraining.
+# Loads the exp38 ASL flat-CTC checkpoint into a sequential multistream model.
+#
+# What transfers: the source is a flat model; per-stream components
+# (proj_pose/lhand/rhand/face, conv_pose/lhand/rhand/face, fusion_attn)
+# have different names and are skipped (strict=False). Only transformer_blocks.*
+# and norm.* are name-matched and loaded. The per-stream projection + conv stacks
+# initialise randomly — they learn DGS-specific local features from scratch while
+# the global transformer layers start from ASL-pretrained weights.
+#
+# Hypothesis: even partial transfer of the shared transformer blocks (which encode
+# high-level temporal sign patterns) gives a stronger initialisation than random,
+# combining with multistream's structural body-part separation for best results.
+#
+# Comparison points:
+#   exp25  — multistream, from scratch, BLEU-4=12.81
+#   exp49  — flat, partial transfer, BLEU-4=7.93
+#   exp54  — multistream, partial transfer (transformer_blocks) ← this
+#
+# Checkpoint saved to: /data/experiments/models/exp54_phoenix_multistream_asl_transfer/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp54-phoenix-multistream-asl-transfer
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 864000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train.py"]
+        args:
+          - "--dataset"
+          - "phoenix"
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp54_phoenix_multistream_asl_transfer"
+          - "--epochs"
+          - "500"
+          - "--decode"
+          - "beam"
+          - "--beam_width"
+          - "4"
+          - "--length_penalty"
+          - "1.5"
+          - "--batch_size"
+          - "32"
+          - "--grad_accum"
+          - "1"
+          - "--fp16"
+          - "--dim"
+          - "256"
+          - "--lr"
+          - "3e-4"
+          - "--dropout"
+          - "0.2"
+          - "--num_workers"
+          - "4"
+          - "--multistream"
+          - "--use_motion"
+          - "--phoenix_ctc_target"
+          - "translation"
+          - "--ffn_expand"
+          - "4"
+          - "--ctc_smoothing"
+          - "0.05"
+          - "--early_stop_patience"
+          - "100"
+          - "--preload_data"
+          - "--pretrained_path"
+          - "/data/experiments/models/exp38_how2sign_flat_ctc_bpe500/best_model.pt"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "8Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data

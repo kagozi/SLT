@@ -1,0 +1,106 @@
+# Experiment 55: PHOENIX-2014-T — Gloss2Text with facebook/bart-large
+#
+# Replicates the Gloss2Text setup from exp33 but swaps mBART-50 for
+# facebook/bart-large (English pre-training, ~400M params).
+#
+# Motivation: the interleaved architecture paper reports BLEU-4 ~26 on
+# PHOENIX Gloss2Text using BART rather than mBART. Exp33 used mBART-50
+# (multilingual, German-native) and is the comparison point.
+#
+# Key difference from exp33:
+#   - bart_model: facebook/bart-large  (vs mbart-large-50-many-to-many-mmt)
+#   - No src_lang / tgt_lang tokens   (BART uses standard BPE, no lang codes)
+#   - No forced_bos_token_id at decode (BART generates freely)
+#
+# Note: BART is English-only pre-trained; German output quality depends entirely
+# on fine-tuning signal from PHOENIX (~7096 training pairs). mBART-50 starts
+# with German language knowledge already baked in. Results will tell us which
+# pre-training strategy transfers better to this low-resource gloss→German task.
+#
+# Hyperparameters match exp33 exactly to isolate the model backbone effect.
+#
+# Checkpoint saved to: /data/experiments/models/exp55_phoenix_gloss2text_bart_large/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-exp55-phoenix-gloss2text-bart-large
+  namespace: gai-lina-group
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  activeDeadlineSeconds: 432000
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-chase-ci-03.calit2.optiputer.net
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: ghcr.io/kagozi/slt:latest
+        command: ["python", "train_gloss2text.py"]
+        args:
+          - "--root_dir"
+          - "/data/phoenix2014/PHOENIX-2014-T-release-v3/PHOENIX-2014-T"
+          - "--output_dir"
+          - "/data/experiments"
+          - "--exp_name"
+          - "exp55_phoenix_gloss2text_bart_large"
+          - "--bart_model"
+          - "facebook/bart-large"
+          - "--epochs"
+          - "60"
+          - "--lr"
+          - "5e-5"
+          - "--batch_size"
+          - "4"
+          - "--grad_accum"
+          - "4"
+          - "--beam_width"
+          - "10"
+          - "--max_src_len"
+          - "64"
+          - "--max_tgt_len"
+          - "128"
+          - "--num_workers"
+          - "2"
+          - "--fp16"
+          - "--early_stop_patience"
+          - "15"
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: MPLCONFIGDIR
+          value: /tmp/matplotlib
+        - name: HF_HOME
+          value: /data/.hf
+        - name: TRANSFORMERS_CACHE
+          value: /data/.hf/transformers
+        - name: WANDB_CACHE_DIR
+          value: /data/.wandb_cache
+        resources:
+          requests:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "2"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: slt-data
+          mountPath: /data
+      volumes:
+      - name: slt-data
+        persistentVolumeClaim:
+          claimName: slt-data
