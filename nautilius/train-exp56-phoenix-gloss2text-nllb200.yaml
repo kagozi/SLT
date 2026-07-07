@@ -37,6 +37,10 @@ spec:
                 operator: NotIn
                 values:
                 - k8s-haosu-07.sdsc.optiputer.net
+                - k8s-haosu-05.sdsc.optiputer.net
+                - k8s-haosu-10.sdsc.optiputer.net
+                - k8s-haosu-19.sdsc.optiputer.net
+                - k8s-4090-01.calit2.optiputer.net
                 - k8s-chase-ci-03.calit2.optiputer.net
       restartPolicy: Never
       containers:
