@@ -28,3 +28,4 @@ architecture_*
 *.docx
 figures/*
 references/*
+notes.md
