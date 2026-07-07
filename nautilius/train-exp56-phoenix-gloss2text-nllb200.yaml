@@ -42,6 +42,10 @@ spec:
                 - k8s-haosu-19.sdsc.optiputer.net
                 - k8s-4090-01.calit2.optiputer.net
                 - k8s-chase-ci-03.calit2.optiputer.net
+              - key: nvidia.com/gpu.memory
+                operator: Gt
+                values:
+                - "15000"
       restartPolicy: Never
       containers:
       - name: trainer
