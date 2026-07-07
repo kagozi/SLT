@@ -125,7 +125,7 @@ def make_collate(tokenizer, max_src_len, max_tgt_len, src_lang, tgt_lang):
 def evaluate(model, loader, tokenizer, device, beam_width=4, max_tgt_len=128,
              tgt_lang=None):
     model.eval()
-    forced_bos = tokenizer.lang_code_to_id[tgt_lang] if tgt_lang else None
+    forced_bos = tokenizer.convert_tokens_to_ids(tgt_lang) if tgt_lang else None
     all_preds, all_refs = [], []
 
     for batch in loader:
